@@ -44,14 +44,9 @@ forAll(RRGPU, fieldi)
 int num_cells = T.size();
 int num_species = Y.size();
 
-double* h_T   = new double[num_cells];
-double* h_p   = new double[num_cells];
 double* h_y   = new double[num_cells * num_species];
 double* h_y_t = new double[num_cells * num_species];
 int* h_size = new int[1];
-
-memcpy(h_T, &T[0], num_cells * sizeof(double));
-memcpy(h_p, &p[0], num_cells * sizeof(double));
 
 forAll(Y, speciesI) {
     volScalarField& Yi = Y[speciesI];
@@ -66,6 +61,6 @@ string mechanismFile = CanteraTorchProperties.lookupOrDefault("CanteraMechanismF
 char target_mechanismFile[100]; 
 std::strcpy(target_mechanismFile, mechanismFile.c_str()); 
 
-opencc_ode_init(target_mechanismFile, num_cells, h_T, h_p, h_y);
+opencc_ode_init(target_mechanismFile, num_cells, &T[0], &p[0], h_y);
 
 double* Ynew = new double[num_cells * num_species];
