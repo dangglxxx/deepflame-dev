@@ -13,6 +13,8 @@
 #include "AmgXSolver.H"
 #include <numeric>
 #include <limits>
+#include <mpi.h>
+#include "dfMatrixDataBase.H"
 
 // initialize AmgXSolver::count to 0
 int AmgXSolver::count = 0;
@@ -22,9 +24,9 @@ AMGX_resources_handle AmgXSolver::rsrc = nullptr;
 
 
 /* \implements AmgXSolver::AmgXSolver */
-AmgXSolver::AmgXSolver(const std::string &modeStr, const std::string &cfgFile)
+AmgXSolver::AmgXSolver(const std::string &modeStr, const std::string &cfgFile, const int devID)
 {
-    initialize(modeStr, cfgFile);
+    initialize(modeStr, cfgFile, devID);
 }
 
 
@@ -36,7 +38,7 @@ AmgXSolver::~AmgXSolver()
 
 
 /* \implements AmgXSolver::initialize */
-void AmgXSolver::initialize(const std::string &modeStr, const std::string &cfgFile)
+void AmgXSolver::initialize(const std::string &modeStr, const std::string &cfgFile, int devID)
 {
     
     // if this instance has already been initialized, skip
@@ -52,8 +54,15 @@ void AmgXSolver::initialize(const std::string &modeStr, const std::string &cfgFi
     // get the mode of AmgX solver
     setMode(modeStr);  
 
+    // check if MPI has been initialized
+    MPI_Initialized(&isMPIEnabled);
+    if (isMPIEnabled) {
+        MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+        mpiWorld = MPI_COMM_WORLD;
+    }
+
     // initialize AmgX
-    initAmgX(cfgFile);  
+    initAmgX(cfgFile, devID);
 
     // a bool indicating if this instance is initialized
     isInitialised = true;
@@ -84,7 +93,7 @@ void AmgXSolver::setMode(const std::string &modeStr)
 
 
 /* \implements AmgXSolver::initAmgX */
- void AmgXSolver::initAmgX(const std::string &cfgFile)
+ void AmgXSolver::initAmgX(const std::string &cfgFile, int devID)
 {
     // only the first instance (AmgX solver) is in charge of initializing AmgX
     if (count == 1)
@@ -106,7 +115,13 @@ void AmgXSolver::setMode(const std::string &modeStr)
     AMGX_SAFE_CALL(AMGX_config_add_parameters(&cfg, "exception_handling=1"));
 
     // create an AmgX resource object, only the first instance is in charge
-    if (count == 1) AMGX_resources_create_simple(&rsrc, cfg);
+    if (count == 1) {
+        if (isMPIEnabled) {
+            AMGX_resources_create(&rsrc, cfg, &mpiWorld, 1, &devID);
+        } else {
+            AMGX_resources_create_simple(&rsrc, cfg);
+        }
+    }
 
     // create AmgX vector object for unknowns and RHS
     AMGX_vector_create(&AmgXP, rsrc, mode);
@@ -169,6 +184,7 @@ void AmgXSolver::finalize()
 void AmgXSolver::setOperator
 (
     const int nRows,
+    const int nGlobalRows,
     const int nNz,
     const int *rowIndex,
     const int *colIndex,
@@ -195,16 +211,56 @@ void AmgXSolver::setOperator
         exit(0);
     }
 
-    // upload matrix A to AmgX
-    AMGX_matrix_upload_all(
-        AmgXA, nRows, nNz, 1, 1, rowIndex, colIndex, value, nullptr);
+    // check if mpi initialize
+    if (!isMPIEnabled)
+    {
+        // upload matrix A to AmgX
+        AMGX_matrix_upload_all(
+            AmgXA, nRows, nNz, 1, 1, rowIndex, colIndex, value, nullptr);
 
-    // bind the matrix A to the solver
-    AMGX_solver_setup(solver, AmgXA);
+        // bind the matrix A to the solver
+        AMGX_solver_setup(solver, AmgXA);
 
-    // connect (bind) vectors to the matrix
-    AMGX_vector_bind(AmgXP, AmgXA);
-    AMGX_vector_bind(AmgXRHS, AmgXA);
+        // connect (bind) vectors to the matrix
+        AMGX_vector_bind(AmgXP, AmgXA);
+        AMGX_vector_bind(AmgXRHS, AmgXA);
+    } else {
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        AMGX_distribution_handle dist;
+        AMGX_distribution_create(&dist, cfg);
+
+        // Must persist until after we call upload
+        std::vector<int> offsets(mpiSize + 1, 0);
+
+        // Determine the number of rows per GPU
+        std::vector<int> nRowsPerGPU(mpiSize);
+        MPI_Allgather(&nRows, 1, MPI_INT, nRowsPerGPU.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+        // Calculate the global offsets
+        std::partial_sum(nRowsPerGPU.begin(), nRowsPerGPU.end(), offsets.begin() + 1);
+        
+        AMGX_distribution_set_partition_data(
+            dist, AMGX_DIST_PARTITION_OFFSETS, offsets.data());
+        
+        // Set the column indices size, 32- / 64-bit
+        AMGX_distribution_set_32bit_colindices(dist, true);
+
+        AMGX_matrix_upload_distributed(
+            AmgXA, nGlobalRows, nRows, nNz, 1, 1, rowIndex,
+            colIndex, value, nullptr, dist);
+        
+        AMGX_distribution_destroy(dist);
+
+        // bind the matrix A to the solver
+        AMGX_solver_setup(solver, AmgXA);
+
+        // connect (bind) vectors to the matrix
+        AMGX_vector_bind(AmgXP, AmgXA);
+        AMGX_vector_bind(AmgXRHS, AmgXA);
+
+        MPI_Barrier(MPI_COMM_WORLD); 
+    }
 }
 
 
@@ -250,6 +306,8 @@ void AmgXSolver::solve(
     AMGX_vector_upload(AmgXP, nRows, 1, psi);
     AMGX_vector_upload(AmgXRHS, nRows, 1, rhs);
 
+    if (isMPIEnabled) MPI_Barrier(MPI_COMM_WORLD); 
+
     // Solve
     AMGX_solver_solve(solver, AmgXRHS, AmgXP);
 
@@ -268,13 +326,16 @@ void AmgXSolver::solve(
     // Download data from device
     AMGX_vector_download(AmgXP, psi);
 
+    if (isMPIEnabled) MPI_Barrier(MPI_COMM_WORLD);
+
     // get norm and iteration number
     double irnorm = 0., rnorm = 0.;
     int nIters = 0;
     getResidual(0, irnorm);
     getIters(nIters);
     getResidual(nIters, rnorm);
-    printf("Initial residual = %.10lf, Final residual = %.5e, No Iterations %d\n", irnorm, rnorm, nIters);
+    if (!isMPIEnabled || myRank == 0)
+        printf("Initial residual = %.10lf, Final residual = %.5e, No Iterations %d\n", irnorm, rnorm, nIters);
 
 }
 

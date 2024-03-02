@@ -1,0 +1,16 @@
+#!/bin/sh
+cd ${0%/*} || exit 1    # Run from this directory
+
+# Source tutorial run functions
+. $WM_PROJECT_DIR/bin/tools/RunFunctions
+
+application=dfLowMachFoam
+
+runApplication blockMesh
+runApplication decomposePar
+runApplication mpirun -np 4 --allow-run-as-root $application -parallel
+reconstructPar
+flameSpeed > log.fs
+sed -n 's/.*flameSpeed = \([0-9]*\(\.[0-9]*\)\?\).*/\1/p' log.fs > fs
+
+

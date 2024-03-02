@@ -1,0 +1,89 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  7
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      combustionProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+combustionModel  flareFGM;//PaSR;
+
+EDCCoeffs
+{
+    version v2005;
+}
+
+PaSRCoeffs
+{
+
+   mixingScale
+   {
+      type   geometriMeanScale;//globalScale,kolmogorovScale,geometriMeanScale,dynamicScale 
+      
+      globalScaleCoeffs
+      {
+	Cmix  0.01;
+      } 
+
+     dynamicScaleCoeffs
+     {
+       transportChi false;
+       Cd1          1.1;
+       Cd2          0.8;
+       Cp1          0.9;
+       Cp2          0.72;
+     }	     
+
+   }
+
+
+   chemistryScale
+   {
+      type  formationRate;//formationRate,globalConvertion
+
+      globalConvertionCoeffs
+      {
+	 fuel CH4;
+	 oxidizer O2;
+      }
+
+      formationRateCoeffs
+      {
+      }
+
+   }
+
+}
+
+flareFGMCoeffs
+{
+  scaledPV         true;
+  combustion       true;
+  solveEnthalpy    true;
+  flameletT        false;
+  relaxation       false;
+  DpDt             false;
+  buffer           false;
+  bufferTime       0.0;
+  ignition         false;
+  /*
+  ignBeginTime     0.0;
+  ignDurationTime  0.0;
+  x0               0.0;
+  y0               0.0;
+  z0               0.0;
+  R0               0.0;
+  */
+  Sct              0.7;
+  tablePath    flare_CH4_SandiaD_4D.tbl;
+}
+// ************************************************************************* //

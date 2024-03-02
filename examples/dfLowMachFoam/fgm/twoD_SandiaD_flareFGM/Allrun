@@ -1,0 +1,30 @@
+#!/bin/sh
+cd ${0%/*} || exit 1    # Run from this directory
+
+if [ -e flare_CH4_SandiaD_4D.tbl]
+then
+    echo "flare_CH4_SandiaD_4D.tbl exists. Make sure correct table has been used!"
+else
+    echo "flare_CH4_SandiaD_4D.tbl not exist. Downloading ..."
+    wget --content-disposition https://aisquare.oss-us-east-1.aliyuncs.com/data/datasets/14b50df5-dbe9-4f1c-bf58-032b8bc40a20
+    unzip flare_CH4_SandiaD_4D.zip
+fi
+
+
+# Source tutorial run functions
+. $WM_PROJECT_DIR/bin/tools/RunFunctions
+
+# Set application name
+application=$(getApplication)
+
+runApplication blockMesh
+
+runApplication decomposePar -force 
+
+mpirun --oversubscribe -np 4 --allow-run-as-root dfLowMachFoam -parallel
+
+./postProcess
+ 
+
+
+#------------------------------------------------------------------------------

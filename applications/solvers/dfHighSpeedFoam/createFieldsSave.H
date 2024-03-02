@@ -41,6 +41,6 @@ else if(ddtSchemes == "RK3SSP")
 {
     rkcoe1[0]=1.0; rkcoe2[0]=0.0; rkcoe3[0]=1.0;
     rkcoe1[1]=0.75; rkcoe2[1]=0.25; rkcoe3[1]=0.25;
-    rkcoe1[2]=0.33; rkcoe2[2]=0.66; rkcoe3[2]=0.66;
+    rkcoe1[2]=1.0/3.0; rkcoe2[2]=2.0/3.0; rkcoe3[2]=2.0/3.0;
     rk=3;
 }

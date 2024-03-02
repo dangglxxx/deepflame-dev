@@ -29,7 +29,7 @@ if [ $USE_GPUSOLVER = true ]; then
     mkdir build
     cd build
     cmake ..
-    make 
+    make -j
     export LD_LIBRARY_PATH=$DF_ROOT/src_gpu/build:$LD_LIBRARY_PATH
 fi
 cd $DF_ROOT

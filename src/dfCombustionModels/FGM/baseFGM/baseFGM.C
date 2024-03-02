@@ -24,6 +24,7 @@ License
 \*---------------------------------------------------------------------------*/
 
 #include "baseFGM.H"
+#include "basicSprayCloud.H" 
 
 // * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
 
@@ -37,6 +38,7 @@ Foam::combustionModels::baseFGM<ReactionThermo>::baseFGM
 )
 :
     laminar<ReactionThermo>(modelType, thermo, turb, combustionProperties),
+    // fvOptions(fv::options::New(this->mesh())),
     buffer_(this->coeffs().lookupOrDefault("buffer", false)),
     scaledPV_(this->coeffs().lookupOrDefault("scaledPV", false)),
     incompPref_(this->coeffs().lookupOrDefault("incompPref", -10.0)),
@@ -44,7 +46,7 @@ Foam::combustionModels::baseFGM<ReactionThermo>::baseFGM
     combustion_(this->coeffs().lookupOrDefault("combustion", false)),
     solveEnthalpy_(this->coeffs().lookupOrDefault("solveEnthalpy", false)),
     flameletT_(this->coeffs().lookupOrDefault("flameletT", false)),
-    // psi_(const_cast<volScalarField&>(dynamic_cast<psiThermo&>(thermo).psi())),
+    tablePath_(this->coeffs().lookup("tablePath")),
     psi_(const_cast<volScalarField&>(dynamic_cast<rhoThermo&>(thermo).psi())),
     Wt_ 
     (
@@ -100,14 +102,14 @@ Foam::combustionModels::baseFGM<ReactionThermo>::baseFGM
     (
         IOobject
         (
-            "He",
+            "Ha",
             this->mesh().time().timeName(),
             this->mesh(),
             IOobject::READ_IF_PRESENT,
             IOobject::AUTO_WRITE
         ),
         this->mesh(),
-        dimensionedScalar("He",dimensionSet(0,2,-2,0,0,0,0),0.0)
+        dimensionedScalar("Ha",dimensionSet(0,2,-2,0,0,0,0),0.0)
     ),
     Hf_
     (
@@ -210,47 +212,97 @@ Foam::combustionModels::baseFGM<ReactionThermo>::baseFGM
         this->mesh(),  
          dimensionedScalar("chi_Zc",dimensionSet(0,0,-1,0,0,0,0),0.0)
     ),
-    YCO2_  
+    chi_Zfltd_
     (
         IOobject
         (
-            "YCO2",
+            "chi_Zfltd",
+            this->mesh().time().timeName(),
+            this->mesh(),
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+        this->mesh(),  
+        dimensionedScalar("chi_Zfltd",dimensionSet(0,0,-1,0,0,0,0),0)
+    ),
+    betac_  
+    (
+        IOobject
+        (
+            "betac",
             this->mesh().time().timeName(),
             this->mesh(),
             IOobject::NO_READ,
             IOobject::AUTO_WRITE
         ),
         this->mesh(),  
-         dimensionedScalar("YCO2",dimless,0.0)  
-    ),
-    YCO_  
+        dimensionedScalar("betac",dimensionSet(0,0,0,0,0,0,0),4.0) 
+    ),  
+    He_s_
     (
         IOobject
         (
-            "YCO",
+            "Ha_s",
+            this->mesh().time().timeName(),
+            this->mesh(),
+            IOobject::NO_READ,
+            IOobject::AUTO_WRITE
+        ),
+        this->mesh(),
+        dimensionedScalar("Ha_s",dimensionSet(0,2,-2,0,0,0,0),0.0)
+    ),
+    Zvar_s_
+    (
+        IOobject
+        (
+            "Zvar_s",
             this->mesh().time().timeName(),
             this->mesh(),
             IOobject::NO_READ,
             IOobject::AUTO_WRITE
         ),
         this->mesh(),  
-        dimensionedScalar("YCO",dimless,0.0)  
+        dimensionedScalar("Zvar_s",dimensionSet(0,0,0,0,0,0,0),0.0) 
     ),
-    YH2O_  
+    c_s_
     (
         IOobject
         (
-            "YH2O",
+            "c_s",
             this->mesh().time().timeName(),
             this->mesh(),
             IOobject::NO_READ,
             IOobject::AUTO_WRITE
         ),
         this->mesh(),  
-        dimensionedScalar("YH2O",dimless,0.0) 
+        dimensionedScalar("c_s",dimensionSet(0,0,0,0,0,0,0),0.0) 
+    ), 
+    cvar_s_
+    (
+        IOobject
+        (
+            "cvar_s",
+            this->mesh().time().timeName(),
+            this->mesh(),
+            IOobject::NO_READ,
+            IOobject::AUTO_WRITE
+        ),
+        this->mesh(),  
+        dimensionedScalar("cvar_s",dimensionSet(0,0,0,0,0,0,0),0.0) 
+    ),    
+    Zcvar_s_
+    (
+        IOobject
+        (
+            "Zcvar_s",
+            this->mesh().time().timeName(),
+            this->mesh(),
+            IOobject::NO_READ,
+            IOobject::AUTO_WRITE
+        ),
+        this->mesh(),  
+        dimensionedScalar("Zcvar_s",dimensionSet(0,0,0,0,0,0,0),0.0) 
     ),
-    speciesNames_(this->coeffs().lookup("speciesName")),
-    Y_(speciesNames_.size()),
     cOmega_c_(omega_c_),
     ZOmega_c_(omega_c_), 
     WtCells_ (Wt_.primitiveFieldRef()),
@@ -267,10 +319,9 @@ Foam::combustionModels::baseFGM<ReactionThermo>::baseFGM
     ZOmega_cCells_(ZOmega_c_.primitiveFieldRef()),
     chi_cCells_(chi_c_.primitiveFieldRef()),
     chi_ZCells_(chi_Z_.primitiveFieldRef()),
-    chi_ZcCells_(chi_Zc_.primitiveFieldRef()), 
-    YCO2Cells_(YCO2_.primitiveFieldRef()),     
-    YCOCells_(YCO_.primitiveFieldRef()),   
-    YH2OCells_(YH2O_.primitiveFieldRef()),        
+    chi_ZcCells_(chi_Zc_.primitiveFieldRef()),     
+    chi_ZfltdCells_(chi_Zfltd_.primitiveFieldRef()),  
+    betacCells_(betac_.primitiveFieldRef()),     
     ZMax_(1.0),
     ZMin_(0.0),
     ZvarMax_(0.25),
@@ -286,6 +337,7 @@ Foam::combustionModels::baseFGM<ReactionThermo>::baseFGM
     rho_inRhoThermo_(dynamic_cast<rhoThermo&>(thermo).rho()),
     p_(this->thermo().p()),
     T_(this->thermo().T()),
+    Y_(this->chemistryPtr_->Y()),
     U_(this->mesh().objectRegistry::lookupObject<volVectorField>("U")),
     dpdt_(this->mesh().objectRegistry::lookupObject<volScalarField>("dpdt")),        
     phi_(this->mesh().objectRegistry::lookupObject<surfaceScalarField>("phi")),
@@ -301,7 +353,10 @@ Foam::combustionModels::baseFGM<ReactionThermo>::baseFGM
     Sc_(this->coeffs().lookupOrDefault("Sc", 1.0)),   
     bufferTime_(this->coeffs().lookupOrDefault("bufferTime", 0.0)),
     relaxation_(this->coeffs().lookupOrDefault("relaxation", false)),
-    DpDt_(this->coeffs().lookupOrDefault("DpDt", false))
+    DpDt_(this->coeffs().lookupOrDefault("DpDt", false)),
+    magUPrime_(U_.component(vector::X)),
+    magUPrimeCells_(magUPrime_.primitiveFieldRef())
+    // isLES_(this->coeffs().lookupOrDefault("isLES", false)),  
 {
     if(incompPref_ < 0.0)  //local pressure used to calculate EOS
     {
@@ -313,29 +368,43 @@ Foam::combustionModels::baseFGM<ReactionThermo>::baseFGM
         << incompPref_ << " Pa" << nl << endl;
     }
 
-    //initialize species fields
-    forAll(Y_, speciesI)
+    //- LES
+    this->isLES_ = this->mesh().objectRegistry::foundObject<compressible::LESModel>(turbulenceModel::propertiesName);
+
+    if (this->isLES_)
     {
+        const Foam::compressible::LESModel& lesModel = this->mesh().objectRegistry::lookupObject<compressible::LESModel>(turbulenceModel::propertiesName);
+            
+        const scalarField& LESdeltaCells=lesModel.delta().internalField();
 
-     Y_.set
-     (
-      speciesI,
-        new volScalarField
-        (
-            IOobject
-            (
-                "Y_"  + speciesNames_[speciesI],
-                this->mesh().time().timeName(),
-                this->mesh(),
-                IOobject::NO_READ,
-                IOobject::AUTO_WRITE
-            ),
-            this->mesh(),
-            dimensionedScalar(dimless, Zero)
-        )
-     );
+        this->deltaCells_ = LESdeltaCells;
 
-   }
+    }
+
+
+//     //initialize species fields
+//     forAll(Y_, speciesI)
+//     {
+
+//      Y_.set
+//      (
+//       speciesI,
+//         new volScalarField
+//         (
+//             IOobject
+//             (
+//                 "Y_"  + speciesNames_[speciesI],
+//                 this->mesh().time().timeName(),
+//                 this->mesh(),
+//                 IOobject::NO_READ,
+//                 IOobject::AUTO_WRITE
+//             ),
+//             this->mesh(),
+//             dimensionedScalar(dimless, Zero)
+//         )
+//      );
+
+//    }
 
    // add fields
      fields_.add(Z_);
@@ -381,68 +450,250 @@ void Foam::combustionModels::baseFGM<ReactionThermo>::transport()
     );
 
 
-    // Solve the mixture fraction transport equation
-    if(buffer_) 
+    if (this->mesh().objectRegistry::foundObject<sprayCloud>(Foam::sprayCloud::typeName))
+
     {
-        Info<< "UW schemes used for scalars" << endl;
+        Info << "Solve Spray Z" << endl;
+ 
+        //- create spray object 
+        basicSprayCloud& spray = dynamic_cast<basicSprayCloud&>
+        (this->mesh().objectRegistry::lookupObjectRef<sprayCloud>(Foam::sprayCloud::typeName));        
 
-        fvScalarMatrix ZEqn
-        (
-            fvm::ddt(rho_,Z_)
-            +scalarUWConvection->fvmDiv(phi_, Z_)  
-            -fvm::laplacian( mut/Sct_ + mu/Sc_ , Z_)     
-        );
-        if(relaxation_)
+        tmp<fvScalarMatrix> tZSource(new fvScalarMatrix(this->Z_, dimMass/dimTime));
+        fvScalarMatrix& SZ = tZSource.ref();
+        forAll(spray.rhoTrans(), i)
         {
-            ZEqn.relax();
+            SZ.source() += spray.rhoTrans()[i]/this->mesh().time().deltaT();
+            spray.rhoTrans()[i].writeOpt() = IOobject::NO_WRITE;
         }
-        ZEqn.solve();
-    }
 
+        // Solve the mixture fraction transport equation
+        if(buffer_) 
+        {
+            Info<< "UW schemes used for scalars" << endl;
+
+            fvScalarMatrix ZEqn
+            (
+                fvm::ddt(rho_,Z_)
+                +scalarUWConvection->fvmDiv(phi_, Z_)  
+                -fvm::laplacian( mut/Sct_ + mu/Sc_ , Z_)   
+                ==
+                - SZ  
+            );
+            if(relaxation_)
+            {
+                ZEqn.relax();
+            }
+            ZEqn.solve();
+        }
+
+        else
+        {
+            Info<< "TVD schemes used for scalars" << endl;
+
+            fvScalarMatrix ZEqn
+            (
+                fvm::ddt(rho_,Z_)
+                +fvm::div(phi_, Z_)
+                -fvm::laplacian(mut/Sct_ + mu/Sc_ , Z_) 
+                ==
+                - SZ                  
+            );
+
+            if(relaxation_)
+            {
+                ZEqn.relax();
+            }
+            ZEqn.solve();
+        }
+        Z_.min(ZMax_);  
+        Z_.max(ZMin_);
+
+
+        if (combustion_)
+        {
+
+            tmp<fvScalarMatrix> tcSource(new fvScalarMatrix(this->c_, dimMass/dimTime));
+            fvScalarMatrix& S_c = tcSource.ref();
+            forAll(spray.rhoTrans(), i)
+            {
+                S_c.source() += spray.rhoTrans()[i]/this->mesh().time().deltaT();
+                spray.rhoTrans()[i].writeOpt() = IOobject::NO_WRITE;
+            }
+
+            // At initial time, cMax is set as Ycmaxall when unscaled PV employed
+            if(this->mesh().time().timeIndex() == 1 && !scaledPV_) cMax_ = Ycmaxall_;  
+
+            // Solve the progress variable transport equation
+            fvScalarMatrix cEqn
+            (
+                fvm::ddt(rho_, c_)
+                +(
+                    buffer_
+                    ? scalarUWConvection->fvmDiv(phi_, c_)
+                    : fvm::div(phi_, c_)
+                )
+                -fvm::laplacian( mut/Sct_ + mu/Sc_, c_)
+                -omega_c_
+                // + fvOptions(rho_, c_)
+                ==
+                c_ * S_c
+            );  
+            // fvOptions.correct(c_);
+            
+            if(relaxation_)
+            {
+                cEqn.relax();
+            }
+            cEqn.solve();
+            c_.min(cMax_);
+            c_.max(cMin_); 
+        } // end if (combustion_)
+
+    }
     else
     {
-        Info<< "TVD schemes used for scalars" << endl;
 
-        fvScalarMatrix ZEqn
-        (
-            fvm::ddt(rho_,Z_)
-            +fvm::div(phi_, Z_)
-            -fvm::laplacian(mut/Sct_ + mu/Sc_ , Z_) 
-        );
-
-        if(relaxation_)
+        // Solve the mixture fraction transport equation
+        if(buffer_) 
         {
-            ZEqn.relax();
+            Info<< "UW schemes used for scalars" << endl;
+
+            fvScalarMatrix ZEqn
+            (
+                fvm::ddt(rho_,Z_)
+                +scalarUWConvection->fvmDiv(phi_, Z_)  
+                -fvm::laplacian( mut/Sct_ + mu/Sc_ , Z_)     
+            );
+            if(relaxation_)
+            {
+                ZEqn.relax();
+            }
+            ZEqn.solve();
         }
-        ZEqn.solve();
+
+        else
+        {
+            Info<< "TVD schemes used for scalars" << endl;
+
+            fvScalarMatrix ZEqn
+            (
+                fvm::ddt(rho_,Z_)
+                +fvm::div(phi_, Z_)
+                -fvm::laplacian(mut/Sct_ + mu/Sc_ , Z_) 
+            );
+
+            if(relaxation_)
+            {
+                ZEqn.relax();
+            }
+            ZEqn.solve();
+        }
+        Z_.min(ZMax_);  
+        Z_.max(ZMin_);
+
+        if (combustion_)
+        {
+
+            // At initial time, cMax is set as Ycmaxall when unscaled PV employed
+            if(this->mesh().time().timeIndex() == 1 && !scaledPV_) cMax_ = Ycmaxall_;  
+
+            // Solve the progress variable transport equation
+            fvScalarMatrix cEqn
+            (
+                fvm::ddt(rho_, c_)
+                +(
+                    buffer_
+                    ? scalarUWConvection->fvmDiv(phi_, c_)
+                    : fvm::div(phi_, c_)
+                )
+                -fvm::laplacian( mut/Sct_ + mu/Sc_, c_)
+                -omega_c_
+                // + fvOptions(rho_, c_)
+            );  
+            // fvOptions.correct(c_);
+            
+            if(relaxation_)
+            {
+                cEqn.relax();
+            }
+            cEqn.solve();
+            c_.min(cMax_);
+            c_.max(cMin_); 
+        } // end if (combustion_)
     }
-    Z_.min(ZMax_);  
-    Z_.max(ZMin_);
 
    // solve the total enthalpy transport equation
     if(solveEnthalpy_)
     {
-        fvScalarMatrix HEqn
-        (
-            fvm::ddt(rho_,He_)
-            +(
-                buffer_
-                ? scalarUWConvection->fvmDiv(phi_, He_)
-                : fvm::div(phi_, He_)
-            )
-            +(
-                DpDt_
-                ? - dpdt_ - ( U_ & fvc::grad(p_) ) - fvm::laplacian( mut/Sct_ + mu/Sc_, He_)
-                : - fvm::laplacian( mut/Sct_ + mu/Sc_, He_) 
-            )
-        ); 
-
-        if(relaxation_)
+        if (this->mesh().objectRegistry::foundObject<sprayCloud>(Foam::sprayCloud::typeName))
         {
-            HEqn.relax();
+
+            Info << "Solve Spray He" << endl;
+            //- create spray object 
+            basicSprayCloud& spray = dynamic_cast<basicSprayCloud&>
+            (this->mesh().objectRegistry::lookupObjectRef<sprayCloud>(Foam::sprayCloud::typeName));     
+                      
+            tmp<fvScalarMatrix> thSource(new fvScalarMatrix(this->He_, dimEnergy/dimTime));
+            fvScalarMatrix& hSource = thSource.ref();
+
+            forAll(this->chemistryPtr_->species(), i)
+            {
+                hSource.source() += spray.rhoTrans(i)*this->chemistryPtr_->hci(i)/this->mesh().time().deltaT();
+            }
+
+            hSource.source() += spray.hsTrans()/this->mesh().time().deltaT();
+
+
+            fvScalarMatrix HEqn
+            (
+                fvm::ddt(rho_,He_)
+                +(
+                    buffer_
+                    ? scalarUWConvection->fvmDiv(phi_, He_)
+                    : fvm::div(phi_, He_)
+                )
+                +(
+                    DpDt_
+                    ? - dpdt_ - ( U_ & fvc::grad(p_) ) - fvm::laplacian( mut/Sct_ + mu/Sc_, He_)
+                    : - fvm::laplacian( mut/Sct_ + mu/Sc_, He_) 
+                )
+                ==
+                - hSource
+            ); 
+
+            if(relaxation_)
+            {
+                HEqn.relax();
+            }
+            HEqn.solve();
         }
-        HEqn.solve();
-    }
+        else
+        {
+            fvScalarMatrix HEqn
+            (
+                fvm::ddt(rho_,He_)
+                +(
+                    buffer_
+                    ? scalarUWConvection->fvmDiv(phi_, He_)
+                    : fvm::div(phi_, He_)
+                )
+                +(
+                    DpDt_
+                    ? - dpdt_ - ( U_ & fvc::grad(p_) ) - fvm::laplacian( mut/Sct_ + mu/Sc_, He_)
+                    : - fvm::laplacian( mut/Sct_ + mu/Sc_, He_) 
+                )
+            ); 
+
+            if(relaxation_)
+            {
+                HEqn.relax();
+            }
+            HEqn.solve();
+        }
+ 
+    }    
+
 
 
     // Solve the mixture fraction variance transport equation
@@ -470,31 +721,15 @@ void Foam::combustionModels::baseFGM<ReactionThermo>::transport()
     Zvar_.min(ZvarMax_);
     Zvar_.max(ZvarMin_);    
 
+    if (this->isLES_)
+    {
+        chi_Zfltd_ = this->turbulence().mu()/rho_*(fvc::grad(Z_) & fvc::grad(Z_)); 
+    }
+
+
 
     if(combustion_ && reactFlowTime_ > 0.0)
     {
-        // At initial time, cMax is set as Ycmaxall when unscaled PV employed
-        if(this->mesh().time().timeIndex() == 1 && !scaledPV_) cMax_ = Ycmaxall_;  
-
-        // Solve the progress variable transport equation
-        fvScalarMatrix cEqn
-        (
-            fvm::ddt(rho_, c_)
-            +(
-                buffer_
-                ? scalarUWConvection->fvmDiv(phi_, c_)
-                : fvm::div(phi_, c_)
-            )
-            -fvm::laplacian( mut/Sct_ + mu/Sc_, c_)
-            -omega_c_
-        );  
-        if(relaxation_)
-        {
-            cEqn.relax();
-        }
-        cEqn.solve();
-        c_.min(cMax_);
-        c_.max(cMin_); 
 
         // Solve the progress variable variance transport equation
         fvScalarMatrix cvarEqn
@@ -530,8 +765,7 @@ void Foam::combustionModels::baseFGM<ReactionThermo>::transport()
                 :  fvm::div(phi_, Zcvar_)
             )
             -fvm::laplacian( mut/Sct_+mu/Sc_, Zcvar_)
-            -(1.0*mut/Sct_*(fvc::grad(c_) & fvc::grad(Z_)))
-            -(1.0*mut/Sct_*(fvc::grad(Z_) & fvc::grad(c_)))
+            -(2.0*mut/Sct_*(fvc::grad(c_) & fvc::grad(Z_)))
             +(2.0*rho_*chi_Zc_)  
             -1.0*(ZOmega_c_-omega_c_*Z_)  
         );
@@ -581,21 +815,14 @@ void Foam::combustionModels::baseFGM<ReactionThermo>::initialiseFalmeKernel()
 }
 
 template<class ReactionThermo>
-Foam::tmp<Foam::fvScalarMatrix>
-Foam::combustionModels::baseFGM<ReactionThermo>::R(volScalarField& Y) const
+void Foam::combustionModels::baseFGM<ReactionThermo>::magUPrime()
 {
-    return laminar<ReactionThermo>::R(Y);
-}
+    autoPtr<LESfilter> filterPtr_(LESfilter::New(this->mesh(), this->turbulence().coeffDict()));
+    LESfilter& filter_(filterPtr_());
 
-template<class ReactionThermo>
-Foam::tmp<Foam::volScalarField>
-Foam::combustionModels::baseFGM<ReactionThermo>::Qdot() const
-{
-    return volScalarField::New
-    (
-        this->thermo().phasePropertyName("Qdot"),
-        laminar<ReactionThermo>::Qdot()
-    );
+    magUPrime_=mag(U_-filter_(U_));
+
+   // return magUPrime_;
 }
 
 

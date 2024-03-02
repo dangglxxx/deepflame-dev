@@ -1,174 +1,93 @@
 #include "dfYEqn.H"
 
-// kernel functions
-__global__ void getUpwindWeight(int num_faces, double *phi, double *weight)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_faces)
-        return;
-    if (phi[index] >= 0)
-        weight[index] = 1.;
-    else
-        weight[index] = 0.;
-}
-
-__global__ void fvc_grad_internal(int num_cells, int num_species,
-        const int *csr_row_index, const int *csr_col_index, const int *csr_diag_index,
-        const double *face_vector, const double *weight, const double *species,
-        const double *volume, double *grady)
+__global__ void yeqn_compute_thermo_alpha_internal(int num_cells,
+        const double *rhoD, double *thermo_alpha)
 {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
     if (index >= num_cells)
         return;
 
-    // A_csr has one more element in each row: itself
-    int row_index = csr_row_index[index];
-    int next_row_index = csr_row_index[index + 1];
-    int diag_index = csr_diag_index[index];
-    int neighbor_offset = csr_row_index[index] - index;
-
-    double vol = volume[index];
-
-    for (int s = 0; s < num_species; s++) {
-        double own_cell_Y = species[num_cells * s + index];
-        double grad_bx = 0;
-        double grad_by = 0;
-        double grad_bz = 0;
-        for (int i = row_index; i < next_row_index; i++)
-        {
-            int inner_index = i - row_index;
-            // lower
-            if (inner_index < diag_index)
-            {
-                int neighbor_index = neighbor_offset + inner_index;
-                double w = weight[neighbor_index];
-                double sfx = face_vector[neighbor_index * 3 + 0];
-                double sfy = face_vector[neighbor_index * 3 + 1];
-                double sfz = face_vector[neighbor_index * 3 + 2];
-                int neighbor_cell_id = csr_col_index[row_index + inner_index];
-                double neighbor_cell_Y = species[num_cells * s + neighbor_cell_id];
-                double face_Y = w * (neighbor_cell_Y - own_cell_Y) + own_cell_Y;
-                grad_bx -= face_Y * sfx;
-                grad_by -= face_Y * sfy;
-                grad_bz -= face_Y * sfz;
-            }
-            // upper
-            if (inner_index > diag_index)
-            {
-                int neighbor_index = neighbor_offset + inner_index - 1;
-                double w = weight[neighbor_index];
-                double sfx = face_vector[neighbor_index * 3 + 0];
-                double sfy = face_vector[neighbor_index * 3 + 1];
-                double sfz = face_vector[neighbor_index * 3 + 2];
-                int neighbor_cell_id = csr_col_index[row_index + inner_index];
-                double neighbor_cell_Y = species[num_cells * s + neighbor_cell_id];
-                double face_Y = w * (own_cell_Y - neighbor_cell_Y) + neighbor_cell_Y;
-                grad_bx += face_Y * sfx;
-                grad_by += face_Y * sfy;
-                grad_bz += face_Y * sfz;
-            }
-    }
-    grady[num_cells * s * 3 + index * 3 + 0] = grad_bx / vol;
-    grady[num_cells * s * 3 + index * 3 + 1] = grad_by / vol;
-    grady[num_cells * s * 3 + index * 3 + 2] = grad_bz / vol;
-    }
+    // UnityLewis
+    // alpha = nu * rho / 0.7
+    // rhoD[i] = alpha
+    thermo_alpha[index] = rhoD[index];
 }
-__global__ void fvc_grad_boundary(int num_cells, int num_boundary_cells, int num_boundary_faces, int num_species,
-        const int *boundary_cell_offset, const int *boundary_cell_id, const int *bouPermedIndex,
-        const double *boundary_face_vector, const double *boundary_species_init,
-        const double *volume, const double *grady_input, double *grady_output, bool uploadData)
+
+__global__ void yeqn_compute_thermo_alpha_boundary(int num_boundary_surfaces,
+        const double *boundary_rhoD, double *boundary_thermo_alpha)
 {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_cells)
+    if (index >= num_boundary_surfaces)
         return;
 
-    int cell_offset = boundary_cell_offset[index];
-    int next_cell_offset = boundary_cell_offset[index + 1];
-    int cell_index = boundary_cell_id[cell_offset];
-
-    double vol = volume[index];
-
-    // compute boundary gradient
-    for (int s = 0; s < num_species; s++) {
-    double grad_bx = 0;
-    double grad_by = 0;
-    double grad_bz = 0;
-    for (int i = cell_offset; i < next_cell_offset; i++)
-    {
-        double sfx = boundary_face_vector[i * 3 + 0];
-        double sfy = boundary_face_vector[i * 3 + 1];
-        double sfz = boundary_face_vector[i * 3 + 2];
-        double face_Y;
-        if (!uploadData)
-        {
-            face_Y = boundary_species_init[num_boundary_faces * s + i];
-        }
-        else
-        {
-            int permute_index = bouPermedIndex[i];
-            face_Y = boundary_species_init[num_boundary_faces * s + permute_index];
-        }
-        grad_bx += face_Y * sfx;
-        grad_by += face_Y * sfy;
-        grad_bz += face_Y * sfz;
-    }
-
-    grady_output[num_cells * s * 3 + cell_index * 3 + 0] =
-        grady_input[num_cells * s * 3 + cell_index * 3 + 0] + grad_bx / vol;
-    grady_output[num_cells * s * 3 + cell_index * 3 + 1] =
-        grady_input[num_cells * s * 3 + cell_index * 3 + 1] + grad_by / vol;
-    grady_output[num_cells * s * 3 + cell_index * 3 + 2] =
-        grady_input[num_cells * s * 3 + cell_index * 3 + 2] + grad_bz / vol;
-    }
+    // UnityLewis
+    // alpha = nu * rho / 0.7
+    // rhoD[i] = alpha
+    boundary_thermo_alpha[index] = boundary_rhoD[index];
 }
-__global__ void correct_boundary_conditions(int num_cells, int num_boundary_cells, int num_boundary_faces, int num_species,
-                                                const int *boundary_cell_offset, const int *boundary_cell_id,
-                                                const double *boundary_sf, const double *mag_sf,
-                                                const double *grady, double* boundary_grady, const double *boundary_deltaCoeffs,
-                                                const double *Y, const double *boundary_Y, const int *Y_patch_type)
+
+__global__ void yeqn_compute_DEff_kernel(int num_species, int num,
+        const double *lewis_number, const double *thermo_alpha, const double *mut_sct, double *DEff)
 {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_cells)
+    if (index >= num)
         return;
 
-    int cell_offset = boundary_cell_offset[index];
-    int next_cell_offset = boundary_cell_offset[index + 1];
-    int cell_index = boundary_cell_id[cell_offset];
-
+    double mutsct = mut_sct[index];
+    double rhoD;
     for (int s = 0; s < num_species; s++) {
-        // initialize boundary_sumYDiffError
-        double grady_x = grady[num_cells * s * 3 + cell_index * 3 + 0];
-        double grady_y = grady[num_cells * s * 3 + cell_index * 3 + 1];
-        double grady_z = grady[num_cells * s * 3 + cell_index * 3 + 2];
-        double internal_Y = Y[num_cells * s + cell_index];
-
-        for (int i = cell_offset; i < next_cell_offset; i++)
-        {
-            double n_x = boundary_sf[i * 3 + 0] / mag_sf[i];
-            double n_y = boundary_sf[i * 3 + 1] / mag_sf[i];
-            double n_z = boundary_sf[i * 3 + 2] / mag_sf[i];
-            int patchIndex = Y_patch_type[i];
-            double sn_grad;
-            if (patchIndex == 0) { // zeroGradient
-                sn_grad = 0;
-            } else if (patchIndex == 1) { // fixedValue
-                sn_grad = boundary_deltaCoeffs[i] * (boundary_Y[num_boundary_faces * s + i] - internal_Y);
-            }
-            // TODO: implement other BCs
-            double grad_correction = sn_grad - (n_x * grady_x + n_y * grady_y + n_z * grady_z);
-            boundary_grady[num_boundary_faces * s * 3 + i * 3 + 0] = grady_x + grad_correction * n_x;
-            boundary_grady[num_boundary_faces * s * 3 + i * 3 + 1] = grady_y + grad_correction * n_y;
-            boundary_grady[num_boundary_faces * s * 3 + i * 3 + 2] = grady_z + grad_correction * n_z;
-        }
+        rhoD = thermo_alpha[index] / lewis_number[s]; // le = alpha / D
+        DEff[num * s + index] =  rhoD + mutsct;
     }
 }
 
-__global__ void sumError_internal(int num_cells, int num_species,
-        const double *hai, const double *rhoD, const double *y, const double *grady,
-        double *sum_hai_rhoD_grady, double *sum_rhoD_grady, double *sum_hai_y)
+__global__ void yeqn_compute_phiUc_internal(int num_cells, int num_surfaces,
+        const int *lower_index, const int *upper_index,
+        const double *weight, const double *sf, const double *sumY_diff_error, double *phiUc)
 {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_cells)
+    if (index >= num_surfaces)
+        return;
+
+    int owner = lower_index[index];
+    int neighbor = upper_index[index];
+
+    double sfx = sf[num_surfaces * 0 + index];
+    double sfy = sf[num_surfaces * 1 + index];
+    double sfz = sf[num_surfaces * 2 + index];
+
+    double w = weight[index]; 
+    double ssfx = (w * (sumY_diff_error[num_cells * 0 + owner] - sumY_diff_error[num_cells * 0 + neighbor]) + sumY_diff_error[num_cells * 0 + neighbor]);
+    double ssfy = (w * (sumY_diff_error[num_cells * 1 + owner] - sumY_diff_error[num_cells * 1 + neighbor]) + sumY_diff_error[num_cells * 1 + neighbor]);
+    double ssfz = (w * (sumY_diff_error[num_cells * 2 + owner] - sumY_diff_error[num_cells * 2 + neighbor]) + sumY_diff_error[num_cells * 2 + neighbor]);
+
+    phiUc[index] = sfx * ssfx + sfy * ssfy + sfz * ssfz;
+}
+ 
+__global__ void yeqn_compute_phiUc_boundary(int num_boundary_surfaces,
+        const double *boundary_sf, const double *boundary_sumY_diff_error, double *boundary_phiUc)
+{
+    int index = blockDim.x * blockIdx.x + threadIdx.x;
+    if (index >= num_boundary_surfaces)
+        return;
+
+    double boundary_sfx = boundary_sf[num_boundary_surfaces * 0 + index];
+    double boundary_sfy = boundary_sf[num_boundary_surfaces * 1 + index];
+    double boundary_sfz = boundary_sf[num_boundary_surfaces * 2 + index];
+
+    double boundary_ssfx = boundary_sumY_diff_error[num_boundary_surfaces * 0 + index];
+    double boundary_ssfy = boundary_sumY_diff_error[num_boundary_surfaces * 1 + index];
+    double boundary_ssfz = boundary_sumY_diff_error[num_boundary_surfaces * 2 + index];
+
+    boundary_phiUc[index] = boundary_sfx * boundary_ssfx + boundary_sfy * boundary_ssfy + boundary_sfz * boundary_ssfz;
+}
+ 
+__global__ void yeqn_sumError_and_compute_hDiffCorrFlux(int num_species, int num,
+        const double *rhoD, const double *hai, const double *y, const double *grady,
+        double *sum_rhoD_grady, double *hDiffCorrFlux)
+{
+    int index = blockDim.x * blockIdx.x + threadIdx.x;
+    if (index >= num)
         return;
 
     double sum_hai_rhoD_grady_x = 0;
@@ -177,1020 +96,914 @@ __global__ void sumError_internal(int num_cells, int num_species,
     double sum_rhoD_grady_x = 0;
     double sum_rhoD_grady_y = 0;
     double sum_rhoD_grady_z = 0;
-    double sum_hai_y_value = 0;
+    double sum_hai_y = 0;
     for (int s = 0; s < num_species; s++) {
-        double hai_value = hai[num_cells * s + index];
-        double rhoD_value = rhoD[num_cells * s + index];
-        double y_value = y[num_cells * s + index];
-        double grady_x = grady[num_cells * s * 3 + index * 3 + 0];
-        double grady_y = grady[num_cells * s * 3 + index * 3 + 1];
-        double grady_z = grady[num_cells * s * 3 + index * 3 + 2];
+        double hai_value = hai[num * s + index];
+        double rhoD_value = rhoD[num * s + index]; // le = alpha/D
+        double y_value = y[num * s + index];
+        double grady_x = grady[num * s * 3 + num * 0 + index];
+        double grady_y = grady[num * s * 3 + num * 1 + index];
+        double grady_z = grady[num * s * 3 + num * 2 + index];
         sum_hai_rhoD_grady_x += hai_value * rhoD_value * grady_x;
         sum_hai_rhoD_grady_y += hai_value * rhoD_value * grady_y;
         sum_hai_rhoD_grady_z += hai_value * rhoD_value * grady_z;
         sum_rhoD_grady_x += rhoD_value * grady_x;
         sum_rhoD_grady_y += rhoD_value * grady_y;
         sum_rhoD_grady_z += rhoD_value * grady_z;
-        sum_hai_y_value += hai_value * y_value;
+        sum_hai_y += hai_value * y_value;
     }
-    sum_hai_rhoD_grady[index * 3 + 0] = sum_hai_rhoD_grady_x;
-    sum_hai_rhoD_grady[index * 3 + 1] = sum_hai_rhoD_grady_y;
-    sum_hai_rhoD_grady[index * 3 + 2] = sum_hai_rhoD_grady_z;
-    sum_rhoD_grady[index * 3 + 0] = sum_rhoD_grady_x;
-    sum_rhoD_grady[index * 3 + 1] = sum_rhoD_grady_y;
-    sum_rhoD_grady[index * 3 + 2] = sum_rhoD_grady_z;
-    sum_hai_y[index] = sum_hai_y_value;
+    sum_rhoD_grady[num * 0 + index] = sum_rhoD_grady_x;
+    sum_rhoD_grady[num * 1 + index] = sum_rhoD_grady_y;
+    sum_rhoD_grady[num * 2 + index] = sum_rhoD_grady_z;
+    hDiffCorrFlux[num * 0 + index] = (sum_hai_rhoD_grady_x - sum_hai_y * sum_rhoD_grady_x);
+    hDiffCorrFlux[num * 1 + index] = (sum_hai_rhoD_grady_y - sum_hai_y * sum_rhoD_grady_y);
+    hDiffCorrFlux[num * 2 + index] = (sum_hai_rhoD_grady_z - sum_hai_y * sum_rhoD_grady_z);
 }
 
-__global__ void sumError_boundary(int num_boundary_faces, int num_species, const int *bouPermedIndex,
-        const double *boundary_hai, const double *boundary_rhoD, const double *boundary_y, const double *boundary_grady,
-        double *sum_boundary_hai_rhoD_grady, double *sum_boundary_rhoD_grady, double *sum_boundary_hai_y, bool uploadData)
+__global__ void yeqn_fvc_laplacian_scalar_internal(int num_species, int num_cells, int num_surfaces,
+        const int *lower_index, const int *upper_index,
+        const double *mag_sf, const double *delta_coeffs, const double *weight,
+        const double *thermo_alpha, const double *hai, const double *vf, double *output)
 {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_faces)
+    if (index >= num_surfaces)
         return;
 
-    int permute_index, permute_index_Y;
-    if (!uploadData)
-    {
-        permute_index_Y = index;
-    }
-    else
-    {
-        permute_index_Y = bouPermedIndex[index];
-    }
-    permute_index = bouPermedIndex[index];
-    
-    double sum_boundary_hai_rhoD_grady_x = 0;
-    double sum_boundary_hai_rhoD_grady_y = 0;
-    double sum_boundary_hai_rhoD_grady_z = 0;
-    double sum_boundary_rhoD_grady_x = 0;
-    double sum_boundary_rhoD_grady_y = 0;
-    double sum_boundary_rhoD_grady_z = 0;
-    double sum_boundary_hai_y_value = 0;
+    int owner = lower_index[index];
+    int neighbor = upper_index[index];
+
+    double w = weight[index];
+    double magsf = mag_sf[index];
+    double delta_coeff = delta_coeffs[index];
+    double thermo_alpha_owner = thermo_alpha[owner];
+    double thermo_alpha_neighbor = thermo_alpha[neighbor];
+
+    //if (owner == 21 || neighbor == 21)
+    //   printf("input index: %d, thermo: %.16lf, %.16lf\n", index, thermo_alpha_owner, thermo_alpha_neighbor);
+    double sum_ssf = 0;
     for (int s = 0; s < num_species; s++) {
-        double boundary_hai_value = boundary_hai[num_boundary_faces * s + permute_index];
-        double boundary_rhoD_value = boundary_rhoD[num_boundary_faces * s + permute_index];
-        double boundary_y_value = boundary_y[num_boundary_faces * s + permute_index_Y];
-        double boundary_grady_x = boundary_grady[num_boundary_faces * s * 3 + index * 3 + 0];
-        double boundary_grady_y = boundary_grady[num_boundary_faces * s * 3 + index * 3 + 1];
-        double boundary_grady_z = boundary_grady[num_boundary_faces * s * 3 + index * 3 + 2];
-        sum_boundary_hai_rhoD_grady_x += boundary_hai_value * boundary_rhoD_value * boundary_grady_x;
-        sum_boundary_hai_rhoD_grady_y += boundary_hai_value * boundary_rhoD_value * boundary_grady_y;
-        sum_boundary_hai_rhoD_grady_z += boundary_hai_value * boundary_rhoD_value * boundary_grady_z;
-        sum_boundary_rhoD_grady_x += boundary_rhoD_value * boundary_grady_x;
-        sum_boundary_rhoD_grady_y += boundary_rhoD_value * boundary_grady_y;
-        sum_boundary_rhoD_grady_z += boundary_rhoD_value * boundary_grady_z;
-        sum_boundary_hai_y_value += boundary_hai_value * boundary_y_value;
+        double haii_owner = hai[num_cells * s + owner];
+        double haii_neighbor = hai[num_cells * s + neighbor];
+        double gamma = w * (thermo_alpha_owner * haii_owner) + (1 - w) * (thermo_alpha_neighbor * haii_neighbor);
+        double sngrad = delta_coeff * (vf[num_cells * s + neighbor] - vf[num_cells * s + owner]);
+        double ssf = gamma * sngrad * magsf;
+        sum_ssf += ssf;
+        //if (owner == 21 || neighbor == 21)
+        //    printf("hai: %.16lf, %.16lf, gamma: %.16lf, sngrad: %.16lf, ssf: %.16lf\n", haii_owner, haii_neighbor, gamma, sngrad, ssf);
     }
-    sum_boundary_hai_rhoD_grady[index * 3 + 0] = sum_boundary_hai_rhoD_grady_x;
-    sum_boundary_hai_rhoD_grady[index * 3 + 1] = sum_boundary_hai_rhoD_grady_y;
-    sum_boundary_hai_rhoD_grady[index * 3 + 2] = sum_boundary_hai_rhoD_grady_z;
-    sum_boundary_rhoD_grady[index * 3 + 0] = sum_boundary_rhoD_grady_x;
-    sum_boundary_rhoD_grady[index * 3 + 1] = sum_boundary_rhoD_grady_y;
-    sum_boundary_rhoD_grady[index * 3 + 2] = sum_boundary_rhoD_grady_z;
-    sum_boundary_hai_y[index] = sum_boundary_hai_y_value;
+
+    // owner
+    atomicAdd(&(output[owner]), sum_ssf);
+    // neighbor
+    atomicAdd(&(output[neighbor]), -sum_ssf);
 }
 
-__global__ void calculate_hDiffCorrFlux(int num,
-        const double *sum_hai_rhoD_grady, const double *sum_rhoD_grady, const double *sum_hai_y, double *hDiffCorrFlux)
+__global__ void yeqn_fvc_laplacian_scalar_boundary_fixedValue(int num_species, int num_cells, int num_boundary_surfaces,
+        int num, int offset, const int *face2Cells,
+        const double *boundary_mag_sf, const double *boundary_delta_coeffs,
+        const double *boundary_thermo_alpha, const double *boundary_hai,
+        const double *vf, const double *boundary_vf, double *output)
 {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
     if (index >= num)
         return;
 
-    hDiffCorrFlux[index * 3 + 0] += (sum_hai_rhoD_grady[index * 3 + 0] - sum_hai_y[index] * sum_rhoD_grady[index * 3 + 0]);
-    hDiffCorrFlux[index * 3 + 1] += (sum_hai_rhoD_grady[index * 3 + 1] - sum_hai_y[index] * sum_rhoD_grady[index * 3 + 1]);
-    hDiffCorrFlux[index * 3 + 2] += (sum_hai_rhoD_grady[index * 3 + 2] - sum_hai_y[index] * sum_rhoD_grady[index * 3 + 2]);
-}
+    int start_index = offset + index;
+    int cellIndex = face2Cells[start_index];
 
-__global__ void calculate_phiUc_internal(int num_cells,
-        const int *csr_row_index, const int *csr_col_index, const int *csr_diag_index,
-        const double *face_vector, const double *weight, const double *sumYDiffError, double *phiUc)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_cells)
-        return;
+    double boundary_delta_coeff = boundary_delta_coeffs[start_index];
+    double boundary_magsf = boundary_mag_sf[start_index];
+    double boundary_alpha = boundary_thermo_alpha[start_index];
 
-    // A_csr has one more element in each row: itself
-    int row_index = csr_row_index[index];
-    int row_elements = csr_row_index[index + 1] - row_index;
-    int diag_index = csr_diag_index[index];
-    int neighbor_offset = csr_row_index[index] - index;
-
-    double own_cell_sumYDiffError_x = sumYDiffError[index * 3 + 0];
-    double own_cell_sumYDiffError_y = sumYDiffError[index * 3 + 1];
-    double own_cell_sumYDiffError_z = sumYDiffError[index * 3 + 2];
-
-    // lower
-    for (int i = 0; i < diag_index; i++)
-    {
-        double phiUc_face = 0;
-
-        int neighbor_index = neighbor_offset + i;
-        int neighbor_cell_id = csr_col_index[row_index + i];
-        double w = weight[neighbor_index];
-        double sfx = face_vector[neighbor_index * 3 + 0];
-        double sfy = face_vector[neighbor_index * 3 + 1];
-        double sfz = face_vector[neighbor_index * 3 + 2];
-        double neighbor_cell_sumYDiffError_x = sumYDiffError[neighbor_cell_id * 3 + 0];
-        double neighbor_cell_sumYDiffError_y = sumYDiffError[neighbor_cell_id * 3 + 1];
-        double neighbor_cell_sumYDiffError_z = sumYDiffError[neighbor_cell_id * 3 + 2];
-        double face_x = w * (neighbor_cell_sumYDiffError_x - own_cell_sumYDiffError_x) + own_cell_sumYDiffError_x;
-        double face_y = w * (neighbor_cell_sumYDiffError_y - own_cell_sumYDiffError_y) + own_cell_sumYDiffError_y;
-        double face_z = w * (neighbor_cell_sumYDiffError_z - own_cell_sumYDiffError_z) + own_cell_sumYDiffError_z;
-
-        phiUc_face = face_x * sfx + face_y * sfy + face_z * sfz;
-        phiUc[neighbor_index] = phiUc_face;
-    }
-    // upper
-    for (int i = diag_index + 1; i < row_elements; i++)
-    {
-        double phiUc_face = 0;
-
-        int neighbor_index = neighbor_offset + i - 1;
-        int neighbor_cell_id = csr_col_index[row_index + i];
-        double w = weight[neighbor_index];
-        double sfx = face_vector[neighbor_index * 3 + 0];
-        double sfy = face_vector[neighbor_index * 3 + 1];
-        double sfz = face_vector[neighbor_index * 3 + 2];
-        double neighbor_cell_sumYDiffError_x = sumYDiffError[neighbor_cell_id * 3 + 0];
-        double neighbor_cell_sumYDiffError_y = sumYDiffError[neighbor_cell_id * 3 + 1];
-        double neighbor_cell_sumYDiffError_z = sumYDiffError[neighbor_cell_id * 3 + 2];
-        double face_x = w * (own_cell_sumYDiffError_x - neighbor_cell_sumYDiffError_x) + neighbor_cell_sumYDiffError_x;
-        double face_y = w * (own_cell_sumYDiffError_y - neighbor_cell_sumYDiffError_y) + neighbor_cell_sumYDiffError_y;
-        double face_z = w * (own_cell_sumYDiffError_z - neighbor_cell_sumYDiffError_z) + neighbor_cell_sumYDiffError_z;
-
-        phiUc_face = face_x * sfx + face_y * sfy + face_z * sfz;
-        phiUc[neighbor_index] = phiUc_face;
-    }
-}
-
-__global__ void calculate_phiUc_boundary(int num_boundary_faces,
-                                         const int *boundary_cell_offset, const int *boundary_cell_id,
-                                         const double *boundary_sf, const double *boundary_sumYDiffError,
-                                         double *boundary_phiUc)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_faces)
-        return;
-
-    double n_x = boundary_sf[index * 3 + 0];
-    double n_y = boundary_sf[index * 3 + 1];
-    double n_z = boundary_sf[index * 3 + 2];
-
-    double err_x = boundary_sumYDiffError[index * 3 + 0];
-    double err_y = boundary_sumYDiffError[index * 3 + 1];
-    double err_z = boundary_sumYDiffError[index * 3 + 2];
-
-    boundary_phiUc[index] = n_x * err_x + n_y * err_y + n_z * err_z;
-}
-
-__global__ void fvm_ddt_kernel_scalar(int num_cells, int num_faces, int num_species, int inertIndex, const double rdelta_t,
-                                      const int *csr_row_index, const int *csr_diag_index,
-                                      const double *rho_old, const double *rho_new, const double *volume, const double *species_old,
-                                      const double *A_csr_input, const double *b_input, double *A_csr_output, double *b_output)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_cells)
-        return;
-
-    // A_csr has one more element in each row: itself
-    int row_index = csr_row_index[index];
-    int diag_index = csr_diag_index[index];
-    int csr_index = row_index + diag_index;
-
-    double ddt_diag = rdelta_t * rho_new[index] * volume[index];
-    double ddt_part_term = rdelta_t * rho_old[index] * volume[index];
-    int mtxIndex = 0;
+    double sum_boundary_ssf = 0;
     for (int s = 0; s < num_species; s++) {
-        if (s == inertIndex)
-            continue;
-        A_csr_output[mtxIndex * (num_cells + num_faces) + csr_index] =
-            A_csr_input[mtxIndex * (num_cells + num_faces) + csr_index] + ddt_diag;
-        b_output[mtxIndex * num_cells + index] =
-            b_input[mtxIndex * num_cells + index] + ddt_part_term * species_old[num_cells * s + index];
-        ++mtxIndex;
+        // sn_grad: solving according to fixedValue BC
+        double boundary_sngrad = boundary_delta_coeff * (boundary_vf[num_boundary_surfaces * s + start_index] - vf[num_cells * s + cellIndex]);
+        double boundary_gamma = boundary_alpha * boundary_hai[num_boundary_surfaces * s + start_index];
+        double boundary_ssf = boundary_gamma * boundary_sngrad * boundary_magsf;
+        sum_boundary_ssf += boundary_ssf;
     }
+
+    atomicAdd(&(output[cellIndex]), sum_boundary_ssf);
 }
 
-__global__ void compute_inertIndex_y(int num_cells, int num_species, int inertIndex, double *y)
+__global__ void yeqn_fvc_laplacian_scalar_boundary_cyclic(int num_species, int num_cells, int num_boundary_surfaces,
+        int num, int internal_offset, int neighbor_offset, const int *face2Cells,
+        const double *boundary_mag_sf, const double *boundary_delta_coeffs,
+        const double *boundary_thermo_alpha, const double *boundary_hai,
+        const double *vf, const double *boundary_vf, double *output)
+{
+    int index = blockDim.x * blockIdx.x + threadIdx.x;
+    if (index >= num)
+        return;
+
+    int internal_start_index = internal_offset + index;
+    int neighbor_start_index = neighbor_offset + index;
+
+    int internal_cellIndex = face2Cells[internal_start_index];
+    int neighbor_cellIndex = face2Cells[neighbor_start_index];
+
+    double boundary_delta_coeff = boundary_delta_coeffs[internal_start_index];
+    double boundary_magsf = boundary_mag_sf[internal_start_index];
+    double boundary_alpha = boundary_thermo_alpha[internal_start_index];
+
+    double sum_boundary_ssf = 0;
+    for (int s = 0; s < num_species; s++) {
+        // sn_grad: solving according to coupled BC
+        double boundary_sngrad = boundary_delta_coeff *
+            (vf[num_cells * s + neighbor_cellIndex] - vf[num_cells * s + internal_cellIndex]);
+        double boundary_gamma = boundary_alpha * boundary_hai[num_boundary_surfaces * s + internal_start_index];
+        double boundary_ssf = boundary_gamma * boundary_sngrad * boundary_magsf;
+        sum_boundary_ssf += boundary_ssf;
+    }
+
+    atomicAdd(&(output[internal_cellIndex]), sum_boundary_ssf);
+}
+
+__global__ void yeqn_fvc_laplacian_scalar_boundary_processor(int num_species, int num_cells, int num_boundary_surfaces,
+        int num, int offset, const int *face2Cells,
+        const double *boundary_mag_sf, const double *boundary_delta_coeffs, const double *boundary_weight,
+        const double *boundary_thermo_alpha, const double *boundary_hai,
+        const double *vf, const double *boundary_vf, double *output)
+{
+    int index = blockDim.x * blockIdx.x + threadIdx.x;
+    if (index >= num)
+        return;
+
+    int neighbor_start_index = offset + index;
+    int internal_start_index = offset + num + index;
+    int cellIndex = face2Cells[neighbor_start_index];
+
+    double boundary_magsf = boundary_mag_sf[neighbor_start_index];
+    double boundary_delta_coeff = boundary_delta_coeffs[neighbor_start_index];
+    double boundary_w = boundary_weight[neighbor_start_index];
+    double boundary_thermo_alpha_owner = boundary_thermo_alpha[internal_start_index];
+    double boundary_thermo_alpha_neighbor = boundary_thermo_alpha[neighbor_start_index];
+
+    double sum_boundary_ssf = 0;
+    for (int s = 0; s < num_species; s++) {
+        double boundary_haii_owner = boundary_hai[num_boundary_surfaces * s + internal_start_index];
+        double boundary_haii_neighbor = boundary_hai[num_boundary_surfaces * s + neighbor_start_index];
+        double boundary_sngrad = boundary_delta_coeff *
+            (boundary_vf[num_boundary_surfaces * s + neighbor_start_index] - vf[num_cells * s + cellIndex]);
+        double boundary_gamma = boundary_w * (boundary_thermo_alpha_owner * boundary_haii_owner)
+            + (1 - boundary_w) * (boundary_thermo_alpha_neighbor * boundary_haii_neighbor);
+        double boundary_ssf = boundary_gamma * boundary_sngrad * boundary_magsf;
+        sum_boundary_ssf += boundary_ssf;
+    }
+
+    atomicAdd(&(output[cellIndex]), sum_boundary_ssf);
+}
+
+__global__ void yeqn_buildBC_scalar(int num_boundary_surfaces,
+        const int *face2Cells, const double *output, double *boundary_output)
+
+{
+    int index = blockDim.x * blockIdx.x + threadIdx.x;
+    if (index >= num_boundary_surfaces)
+        return;
+
+    int cellIndex = face2Cells[index];
+    boundary_output[index] = output[cellIndex];
+}
+
+__global__ void yeqn_divide_cell_volume_scalar(int num_cells, const double* volume, double *output)
 {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
     if (index >= num_cells)
         return;
-
-    double sum_yi = 0;
-    for (int i = 0; i < num_species; i++)
-    {
-        if (i == inertIndex) continue;
-
-        double yi = y[num_cells * i + index];
-        sum_yi += yi > 0 ? yi : 0;
-    }
-    sum_yi = 1 - sum_yi;
-    y[num_cells * inertIndex + index] = (sum_yi > 0 ? sum_yi : 0);
-}
-
-__global__ void fvm_div_internal_scalar(int num_cells, int num_faces, int num_species, int inertIndex,
-                                        const int *csr_row_index, const int *csr_diag_index,
-                                        const double *div_weight, const double *phi,
-                                        const double *A_csr_input, double *A_csr_output)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_cells)
-        return;
-
-    // A_csr has one more element in each row: itself
-    int row_index = csr_row_index[index];
-    int next_row_index = csr_row_index[index + 1];
-    int diag_index = csr_diag_index[index];
-    int neighbor_offset = csr_row_index[index] - index;
-
-    int mtxIndex = 0;
-    for (int s = 0; s < num_species; s++) {
-        if (s == inertIndex)
-            continue;
-    double div_diag = 0;
-    for (int i = row_index; i < next_row_index; i++)
-    {
-        int inner_index = i - row_index;
-        // lower
-        if (inner_index < diag_index)
-        {
-            int neighbor_index = neighbor_offset + inner_index;
-            double w = div_weight[neighbor_index];
-            double f = phi[neighbor_index];
-            A_csr_output[mtxIndex * (num_cells + num_faces) + i] =
-                A_csr_input[mtxIndex * (num_cells + num_faces) + i] + (-w) * f;
-            // lower neighbors contribute to sum of -1
-            div_diag += (w - 1) * f;
-        }
-        // upper
-        if (inner_index > diag_index)
-        {
-            // upper, index - 1, consider of diag
-            int neighbor_index = neighbor_offset + inner_index - 1;
-            double w = div_weight[neighbor_index];
-            double f = phi[neighbor_index];
-            A_csr_output[mtxIndex * (num_cells + num_faces) + i] =
-                A_csr_input[mtxIndex * (num_cells + num_faces) + i] + (1 - w) * f;
-            // upper neighbors contribute to sum of 1
-            div_diag += w * f;
-        }
-    }
-    A_csr_output[mtxIndex * (num_cells + num_faces) + row_index + diag_index] =
-        A_csr_input[mtxIndex * (num_cells + num_faces) + row_index + diag_index] + div_diag; // diag
-        ++mtxIndex;
-    }
-}
-__global__ void fvm_div_boundary_scalar(int num_cells, int num_faces, int num_boundary_cells, int num_boundary_faces,
-                                        int num_species, int inertIndex,
-                                        const int *csr_row_index, const int *csr_diag_index, const double *boundary_phi,
-                                        const int *boundary_cell_offset, const int *boundary_cell_id,
-                                        double *internal_coeffs, const double *boundary_coeffs,
-                                        const double *A_csr_input, double *A_csr_output, const double *b_input, double *b_output)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_cells)
-        return;
-
-    int cell_offset = boundary_cell_offset[index];
-    int cell_index = boundary_cell_id[cell_offset];
-    int loop_size = boundary_cell_offset[index + 1] - cell_offset;
-
-    int row_index = csr_row_index[cell_index];
-    int diag_index = csr_diag_index[cell_index];
-    int csr_dim = num_cells + num_faces;
-    int csr_index = row_index + diag_index;
-
-    int mtxIndex = 0;
-    for (int s = 0; s < num_species; s++) {
-        if (s == inertIndex)
-            continue;
-    // construct internalCoeffs & boundaryCoeffs
-    double internal_coeffs_own = 0;
-    double boundary_coeffs_own = 0;
-    for (int i = 0; i < loop_size; i++)
-    {
-        internal_coeffs_own += boundary_phi[cell_offset + i] * internal_coeffs[num_boundary_faces * s + cell_offset + i];
-        boundary_coeffs_own += -boundary_phi[cell_offset + i] * boundary_coeffs[num_boundary_faces * s + cell_offset + i];
-    }
-    A_csr_output[mtxIndex * (num_cells + num_faces) + csr_index] =
-        A_csr_input[mtxIndex * (num_cells + num_faces) + csr_index] + internal_coeffs_own;
-    b_output[mtxIndex * num_cells + cell_index] =
-        b_input[mtxIndex * num_cells + cell_index] + boundary_coeffs_own;
-        ++mtxIndex;
-    }
-}
-
-__global__ void fvm_laplacian_uncorrected_scalar_internal(int num_cells, int num_faces, int num_species, int inertIndex,
-                                                          const int *csr_row_index, const int *csr_col_index, const int *csr_diag_index,
-                                                          const double *mut_sct, const double *rhoD, const double *weight,
-                                                          const double *magsf, const double *distance,
-                                                          const double sign, const double *A_csr_input, double *A_csr_output)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_cells)
-        return;
-
-    // A_csr has one more element in each row: itself
-    int row_index = csr_row_index[index];
-    int row_elements = csr_row_index[index + 1] - row_index;
-    int diag_index = csr_diag_index[index];
-    int neighbor_offset = csr_row_index[index] - index;
-
-    int mtxIndex = 0;
-    for (int s = 0; s < num_species; s++) {
-    if (s == inertIndex) continue;
-    double own_coeff = mut_sct[index] + rhoD[num_cells * s + index];
-    double sum_diag = 0;
-    // lower
-    for (int i = 0; i < diag_index; i++)
-    {
-        int neighbor_index = neighbor_offset + i;
-        int neighbor_cell_id = csr_col_index[i + row_index];
-        double w = weight[neighbor_index];
-        double nei_coeff = mut_sct[neighbor_cell_id] + rhoD[num_cells * s + neighbor_cell_id];
-        double gamma = w * (nei_coeff - own_coeff) + own_coeff;
-        double gamma_magsf = gamma * magsf[neighbor_index];
-        double coeff = gamma_magsf * distance[neighbor_index];
-        A_csr_output[mtxIndex * (num_cells + num_faces) + row_index + i] =
-            A_csr_input[mtxIndex * (num_cells + num_faces) + row_index + i] + coeff * sign;
-
-        sum_diag += (-coeff);
-    }
-    // upper
-    for (int i = diag_index + 1; i < row_elements; i++)
-    {
-        int neighbor_index = neighbor_offset + i - 1;
-        int neighbor_cell_id = csr_col_index[i + row_index];
-        double w = weight[neighbor_index];
-        double nei_coeff = mut_sct[neighbor_cell_id] + rhoD[num_cells * s + neighbor_cell_id];
-        double gamma = w * (own_coeff - nei_coeff) + nei_coeff;
-        double gamma_magsf = gamma * magsf[neighbor_index];
-        double coeff = gamma_magsf * distance[neighbor_index];
-        A_csr_output[mtxIndex * (num_cells + num_faces) + row_index + i] =
-            A_csr_input[mtxIndex * (num_cells + num_faces) + row_index + i] + coeff * sign;
-
-        sum_diag += (-coeff);
-    }
-    // diag
-    A_csr_output[mtxIndex * (num_cells + num_faces) + row_index + diag_index] =
-        A_csr_input[mtxIndex * (num_cells + num_faces) + row_index + diag_index] + sum_diag * sign;
-    ++mtxIndex;
-    }
-}
-
-__global__ void fvm_laplacian_uncorrected_scalar_boundary(int num_cells, int num_faces, int num_boundary_cells, int num_boundary_faces,
-        int num_species, int inertIndex,
-        const int *csr_row_index, const int *csr_diag_index, const int *boundary_cell_offset,
-        const int *boundary_cell_id, const double *boundary_mut_sct, const double *boundary_rhoD,
-        const double *boundary_magsf, const int *bouPermedIndex,
-        const double *gradient_internal_coeffs, const double *gradient_boundary_coeffs,
-        const double sign, const double *A_csr_input, const double *b_input, double *A_csr_output, double *b_output)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_cells)
-        return;
-
-    int cell_offset = boundary_cell_offset[index];
-    int next_cell_offset = boundary_cell_offset[index + 1];
-    int cell_index = boundary_cell_id[cell_offset];
-
-    int row_index = csr_row_index[cell_index];
-    int diag_index = csr_diag_index[cell_index];
-    int csr_index = row_index + diag_index;
-
-    int mtxIndex = 0;
-    for (int s = 0; s < num_species; s++) {
-        if (s == inertIndex) continue;
-        double internal_coeffs = 0;
-        double boundary_coeffs = 0;
-        for (int i = cell_offset; i < next_cell_offset; i++)
-        {
-            int permute_index = bouPermedIndex[i];
-            double gamma = boundary_mut_sct[permute_index] + boundary_rhoD[num_boundary_faces * s + permute_index];
-            double gamma_magsf = gamma * boundary_magsf[i];
-            internal_coeffs += gamma_magsf * gradient_internal_coeffs[num_boundary_faces * s + i];
-            boundary_coeffs -= gamma_magsf * gradient_boundary_coeffs[num_boundary_faces * s + i];
-        }
-
-        A_csr_output[mtxIndex * (num_cells + num_faces) + csr_index] =
-            A_csr_input[mtxIndex * (num_cells + num_faces) + csr_index] + internal_coeffs * sign;
-        b_output[mtxIndex * num_cells + cell_index] =
-            b_input[mtxIndex * num_cells + cell_index] + boundary_coeffs * sign;
-        ++mtxIndex;
-    }
-}
-
-__global__ void fvc_laplacian_internal(int num_cells, int num_species,
-        const int *csr_row_index, const int *csr_col_index, const int *csr_diag_index,
-        const double *alpha, const double *hai, const double* y,
-        const double *weight, const double *magsf, const double *distance,
-        const double* volume, double *output)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_cells)
-        return;
-
-    // A_csr has one more element in each row: itself
-    int row_index = csr_row_index[index];
-    int row_elements = csr_row_index[index + 1] - row_index;
-    int diag_index = csr_diag_index[index];
-    int neighbor_offset = csr_row_index[index] - index;
 
     double vol = volume[index];
-    double sum_all_species = 0;
-	for (int s = 0; s < num_species; s++) {
-		double own_vf = y[num_cells * s + index];
-		double own_coeff = alpha[index] * hai[num_cells * s + index];
-		double sum = 0;
-		// lower
-		for (int i = 0; i < diag_index; i++)
-		{
-			int neighbor_index = neighbor_offset + i;
-			int neighbor_cell_id = csr_col_index[i + row_index];
-			double w = weight[neighbor_index];
-			double nei_vf = y[num_cells * s + neighbor_cell_id];
-			double nei_coeff = alpha[neighbor_cell_id] * hai[num_cells * s + neighbor_cell_id];
-			double face_gamma = (1 - w) * own_coeff + w * nei_coeff;
-			double sngrad = distance[neighbor_index] * (own_vf - nei_vf);
-			double value = face_gamma * sngrad * magsf[neighbor_index];
-			sum -= value;
-		}
-		// upper
-		for (int i = diag_index + 1; i < row_elements; i++)
-		{
-			int neighbor_index = neighbor_offset + i - 1;
-			int neighbor_cell_id = csr_col_index[i + row_index];
-			double w = weight[neighbor_index];
-			double nei_vf = y[num_cells * s + neighbor_cell_id];
-			double nei_coeff = alpha[neighbor_cell_id] * hai[num_cells * s + neighbor_cell_id];
-			double face_gamma = w * own_coeff + (1 - w) * nei_coeff;
-			double sngrad = distance[neighbor_index] * (nei_vf - own_vf);
-			double value = face_gamma * sngrad * magsf[neighbor_index];
-			sum += value;
-		}
-		sum_all_species += sum;
-	}
-	output[index] = sum_all_species / vol;
+
+    output[index] = output[index] / vol;
 }
 
-__global__ void yeqn_update_BoundaryCoeffs_kernel(int num_boundary_faces, int num_species,
-                                                  const double *boundary_phi, double *internal_coeffs,
-                                                  double *boundary_coeffs, double *laplac_internal_coeffs,
-                                                  double *laplac_boundary_coeffs, const int *Y_patch_type,
-                                                  const double *boundary_Y, const double *boundary_deltaCoeffs,
-                                                  const int* bouPermedIndex, bool uploadData)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_faces)
-        return;
-
-    int patchIndex = Y_patch_type[index];
-    double valueInternalCoeffs, valueBoundaryCoeffs, gradientInternalCoeffs, gradientBoundaryCoeffs;
-    for (int s = 0; s < num_species; s++) {
-        if (patchIndex == 0) { // zeroGradient
-            valueInternalCoeffs = 1.;
-            valueBoundaryCoeffs = 0.;
-            gradientInternalCoeffs = 0.;
-            gradientBoundaryCoeffs = 0.;
-        } else if (patchIndex == 1) { // fixedValue
-            if (!uploadData) {
-                    valueInternalCoeffs = 0.;
-                    valueBoundaryCoeffs = boundary_Y[index + s * num_boundary_faces];
-                    gradientInternalCoeffs = -1 * boundary_deltaCoeffs[index];
-                    gradientBoundaryCoeffs = boundary_Y[index + s * num_boundary_faces] * boundary_deltaCoeffs[index];   
-                } else {
-                    int permute_index = bouPermedIndex[index];
-                    valueInternalCoeffs = 0.;
-                    valueBoundaryCoeffs = boundary_Y[permute_index + s * num_boundary_faces];
-                    gradientInternalCoeffs = -1 * boundary_deltaCoeffs[index];
-                    gradientBoundaryCoeffs = boundary_Y[permute_index + s * num_boundary_faces] * boundary_deltaCoeffs[index];
-                }
-        } else if (patchIndex == 2) { // empty
-            valueInternalCoeffs = 0.;
-            valueBoundaryCoeffs = 0.;
-            gradientInternalCoeffs = 0.;
-            gradientBoundaryCoeffs = 0.;
-        }
-        internal_coeffs[num_boundary_faces * s + index] = valueInternalCoeffs;
-        boundary_coeffs[num_boundary_faces * s + index] = valueBoundaryCoeffs;
-        laplac_internal_coeffs[num_boundary_faces * s + index] = gradientInternalCoeffs;
-        laplac_boundary_coeffs[num_boundary_faces * s + index] = gradientBoundaryCoeffs;
-        
-    }
-}
-
-__global__ void yeqn_correct_BoundaryConditions_kernel(int num_cells, int num_boundary_cells, int num_boundary_faces, int num_species,
-                                                       const int *boundary_cell_offset, const int *boundary_cell_id,
-                                                       const double *species, double *boundary_species, const int *Y_patch_type)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_cells)
-        return;
-
-    int cell_offset = boundary_cell_offset[index];
-    int next_cell_offset = boundary_cell_offset[index + 1];
-    int cell_index = boundary_cell_id[cell_offset];
-
-    for (int i = cell_offset; i < next_cell_offset; i++)
-    {
-        int patchIndex = Y_patch_type[i];
-
-        switch (patchIndex)
-        {
-            case 0: // zeroGradient
-            {
-                for (int speciesID = 0; speciesID < num_species; speciesID++)
-                {
-                    boundary_species[speciesID * num_boundary_faces + i] = species[speciesID * num_cells + cell_index];
-                }
-                break;
-            }
-            // case 1:
-            //     break;
-            // TODO implement coupled conditions
-        }
-    }
-}
-
-__global__ void yeqn_calculate_rhoD_alpha_via_nuEff_internal(int num_cells, int num_species, double *rhoD, const double *nuEff,
-        const double *rho, double *alpha)
+__global__ void yeqn_compute_y_inertIndex_kernel(int num_species, int inertIndex, int num_cells, double *y)
 {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
     if (index >= num_cells)
         return;
-    
-    // // rhoD = alpha (UnityLewis)
-    // // alpha = nu * rho / 0.7
-    // for (int i = 0; i < num_species; i++) {
-    //     rhoD[i * num_cells + index] = nuEff[index] * rho[index] / 0.7;
-    // }
 
-    alpha[index] = rhoD[index];
+    double sum_y = 0;
+    for (int s = 0; s < num_species; s++) {
+        if (s == inertIndex) continue;
+
+        double yi = y[num_cells * s + index];
+
+        y[num_cells * s + index] = yi > 0 ? yi : 0;
+        sum_y += yi > 0 ? yi : 0;
+    }
+    sum_y = 1 - sum_y;
+    y[num_cells * inertIndex + index] = (sum_y > 0 ? sum_y : 0);
 }
 
-__global__ void yeqn_calculate_rhoD_alpha_via_nuEff_boundary(int num_boundary_face, int num_species, int *permutIndex,
-        double *boundary_rhoD, const double *boundary_nuEff, const double *boundary_rho, double *boundary_alpha)    
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_face)
-        return;
-    
-    // for (int i = 0; i < num_species; i++) {
-    //     boundary_rhoD[i * num_boundary_face + index] = boundary_nuEff[index] * boundary_rho[index] / 0.7;
-    // }
+double* dfYEqn::getFieldPointer(const char* fieldAlias, location loc, position pos) {
+    char mergedName[256];
+    if (pos == position::internal) {
+        sprintf(mergedName, "%s_%s", (loc == location::cpu) ? "h" : "d", fieldAlias);
+    } else if (pos == position::boundary) {
+        sprintf(mergedName, "%s_boundary_%s", (loc == location::cpu) ? "h" : "d", fieldAlias);
+    }
 
-    boundary_alpha[index] = boundary_rhoD[permutIndex[index]];
+    double *pointer = nullptr;
+    if (fieldPointerMap.find(std::string(mergedName)) != fieldPointerMap.end()) {
+        pointer = fieldPointerMap[std::string(mergedName)];
+    }
+    if (pointer == nullptr) {
+        fprintf(stderr, "Warning! getFieldPointer of %s returns nullptr!\n", mergedName);
+    }
+    //fprintf(stderr, "fieldAlias: %s, mergedName: %s, pointer: %p\n", fieldAlias, mergedName, pointer);
+
+    return pointer;
 }
 
-dfYEqn::dfYEqn(dfMatrixDataBase &dataBase, const std::string &modeStr, const std::string &cfgFile, const int inertIndex)
-    : dataBase_(dataBase), inertIndex(inertIndex)
-{
-    stream = dataBase_.stream;
-    num_species = dataBase_.num_species;
-    num_cells = dataBase_.num_cells;
-    num_faces = dataBase_.num_faces;
-    num_surfaces = dataBase_.num_surfaces;
-    num_boundary_cells = dataBase_.num_boundary_cells;
-    num_boundary_faces = dataBase_.num_boundary_faces;
-    cell_bytes = dataBase_.cell_bytes;
-    boundary_face_bytes = dataBase_.boundary_face_bytes;
-    d_rhoD = dataBase_.d_rhoD;
-    d_boundary_rhoD = dataBase_.d_boundary_rhoD;
-    d_alpha = dataBase_.d_alpha;
-    
-
-    YSolverSet.resize(num_species - 1); // consider inert species
+void dfYEqn::setConstantValues(const std::string &mode_string, const std::string &setting_path, const int inertIndex) {
+    this->stream = dataBase_.stream;
+    this->mode_string = mode_string;
+    this->setting_path = setting_path;
+    this->inertIndex = inertIndex;
+    YSolverSet.resize(dataBase_.num_species - 1); // consider inert species
     for (auto &solver : YSolverSet)
-        solver = new AmgXSolver(modeStr, cfgFile);
+        solver = new AmgXSolver(mode_string, setting_path, dataBase_.localRank);
+}
 
-    d_A_csr_row_index = dataBase_.d_A_csr_row_index;
-    d_A_csr_diag_index = dataBase_.d_A_csr_diag_index;
-    d_A_csr_col_index = dataBase_.d_A_csr_col_index;
+void dfYEqn::setConstantFields(const std::vector<int> patch_type, const std::vector<double> lewis_number) {
+    this->patch_type = patch_type;
+    this->lewis_number = lewis_number;
+    // print lewis number
+    checkCudaErrors(cudaMalloc((void**)&d_lewis_number, dataBase_.num_species * sizeof(double)));
+    checkCudaErrors(cudaMemcpy(d_lewis_number, lewis_number.data(), dataBase_.num_species * sizeof(double), cudaMemcpyHostToDevice));
+}
 
-    h_A_csr = new double[(num_cells + num_faces) * (num_species - 1)];
-    h_b = new double[num_cells * (num_species - 1)];
-    cudaMallocHost(&h_psi, num_cells * num_species * sizeof(double));
-
-    checkCudaErrors(cudaMalloc((void **)&d_A_csr, (num_cells + num_faces) * (num_species - 1) * sizeof(double)));
-    checkCudaErrors(cudaMalloc((void **)&d_b, cell_bytes * (num_species - 1)));
-    checkCudaErrors(cudaMalloc((void **)&d_psi, cell_bytes * (num_species - 1)));
-    checkCudaErrors(cudaMalloc((void **)&d_phiUc, num_faces * sizeof(double)));
-    checkCudaErrors(cudaMalloc((void **)&d_phiUc_boundary, num_boundary_faces * sizeof(double)));
-    checkCudaErrors(cudaMalloc((void **)&d_mut_Sct, cell_bytes));
-    checkCudaErrors(cudaMalloc((void **)&d_boundary_mut_sct, boundary_face_bytes));
-
-    checkCudaErrors(cudaMalloc((void **)&d_boundary_Y, boundary_face_bytes * num_species));
-
-    checkCudaErrors(cudaMalloc((void **)&d_hai, cell_bytes * num_species));
-    checkCudaErrors(cudaMalloc((void **)&d_boundary_hai, boundary_face_bytes * num_species));
-    // checkCudaErrors(cudaMalloc((void **)&d_rhoD, cell_bytes * num_species));
-    // checkCudaErrors(cudaMalloc((void **)&d_boundary_rhoD, boundary_face_bytes * num_species));
-
-    checkCudaErrors(cudaMalloc((void **)&d_sum_rhoD_grady, 3 * cell_bytes));
-    checkCudaErrors(cudaMalloc((void **)&d_sum_boundary_rhoD_grady, 3 * boundary_face_bytes));
-    checkCudaErrors(cudaMalloc((void **)&d_sum_hai_rhoD_grady, 3 * cell_bytes));
-    checkCudaErrors(cudaMalloc((void **)&d_sum_boundary_hai_rhoD_grady, 3 * boundary_face_bytes));
-    checkCudaErrors(cudaMalloc((void **)&d_sum_hai_y, cell_bytes));
-    checkCudaErrors(cudaMalloc((void **)&d_sum_boundary_hai_y, boundary_face_bytes));
-
-    checkCudaErrors(cudaMalloc((void **)&d_grady, 3 * cell_bytes * num_species));
-    checkCudaErrors(cudaMalloc((void **)&d_boundary_grady, 3 * boundary_face_bytes * num_species));
-
-    // checkCudaErrors(cudaMalloc((void **)&d_alpha, cell_bytes));
-
-    // zeroGradient
-    checkCudaErrors(cudaMemsetAsync(dataBase_.d_internal_coeffs_Y, 1, boundary_face_bytes * num_species, stream));
-    checkCudaErrors(cudaMemsetAsync(dataBase_.d_boundary_coeffs_Y, 0, boundary_face_bytes * num_species, stream));
-    checkCudaErrors(cudaMemsetAsync(dataBase_.d_laplac_internal_coeffs_Y, 0, boundary_face_bytes * num_species, stream));
-    checkCudaErrors(cudaMemsetAsync(dataBase_.d_laplac_boundary_coeffs_Y, 0, boundary_face_bytes * num_species, stream));
-
+void dfYEqn::createNonConstantFieldsInternal() {
+#ifndef STREAM_ALLOCATOR
+    // thermophysical fields
+    checkCudaErrors(cudaMalloc((void**)&d_hai, dataBase_.cell_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_mut_sct, dataBase_.cell_value_bytes));
+    // intermediate fields
+    checkCudaErrors(cudaMalloc((void**)&d_grad_y, dataBase_.cell_value_vec_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_sumY_diff_error, dataBase_.cell_value_vec_bytes));
+    checkCudaErrors(cudaMalloc((void**)&d_phiUc, dataBase_.surface_value_bytes));
+    checkCudaErrors(cudaMalloc((void**)&d_DEff, dataBase_.cell_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_permute, dataBase_.cell_value_vec_bytes));
+#endif
+    checkCudaErrors(cudaMalloc((void**)&d_RR, dataBase_.cell_value_bytes * dataBase_.num_species));
+    // computed on CPU, used on GPU, need memcpyh2d
+    checkCudaErrors(cudaMallocHost((void**)&h_rhoD, dataBase_.cell_value_bytes * dataBase_.num_species));
     // UnityLewis
-    checkCudaErrors(cudaMemsetAsync(d_hai, 0, cell_bytes * num_species, stream));
-    checkCudaErrors(cudaMemsetAsync(d_boundary_hai, 0,  boundary_face_bytes * num_species, stream));
-    checkCudaErrors(cudaMemsetAsync(d_mut_Sct, 0, cell_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(d_boundary_mut_sct, 0,  boundary_face_bytes, stream));
+    checkCudaErrors(cudaMallocHost((void**)&h_hai, dataBase_.cell_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMallocHost((void**)&h_mut_sct, dataBase_.cell_value_bytes));
+    // getter for h_xxx
+    // UnityLewis
+    fieldPointerMap["h_rhoD"] = h_rhoD;
+    fieldPointerMap["h_hai"] = h_hai;
+    fieldPointerMap["h_mut_sct"] = h_mut_sct;
 }
 
-void dfYEqn::initializeTimeStep()
-{
-    // consider inert species
-    // initialize matrix value
-    checkCudaErrors(cudaMemsetAsync(d_A_csr, 0, (num_cells + num_faces) * (num_species - 1) * sizeof(double), stream));
-    checkCudaErrors(cudaMemsetAsync(d_b, 0, cell_bytes * (num_species - 1), stream));
-    // initialize variables in each time step
-    checkCudaErrors(cudaMemsetAsync(d_psi, 0, cell_bytes * (num_species - 1), stream));
-
-    // // initialize boundary coeffs
-    // size_t threads_per_block = 1024;
-    // size_t blocks_per_grid = (dataBase_.num_boundary_faces + threads_per_block - 1) / threads_per_block;
-    // yeqn_update_BoundaryCoeffs_kernel<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-    //         num_boundary_faces, num_species,
-    //         dataBase_.d_boundary_phi,
-    //         dataBase_.d_internal_coeffs_Y,
-    //         dataBase_.d_boundary_coeffs_Y,
-    //         dataBase_.d_laplac_internal_coeffs_Y,
-    //         dataBase_.d_laplac_boundary_coeffs_Y,
-    //         dataBase_.d_boundary_YpatchType,
-    //         d_boundary_Y, 
-    //         dataBase_.d_boundary_deltaCoeffs);
+void dfYEqn::createNonConstantFieldsBoundary() {
+#ifndef STREAM_ALLOCATOR
+    // thermophysical fields
+    checkCudaErrors(cudaMalloc((void**)&d_boundary_hai, dataBase_.boundary_surface_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_boundary_mut_sct, dataBase_.boundary_surface_value_bytes));
+    // intermediate fields
+    checkCudaErrors(cudaMalloc((void**)&d_boundary_grad_y, dataBase_.boundary_surface_value_vec_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_boundary_sumY_diff_error, dataBase_.boundary_surface_value_vec_bytes));
+    checkCudaErrors(cudaMalloc((void**)&d_boundary_phiUc, dataBase_.boundary_surface_value_bytes));
+    checkCudaErrors(cudaMalloc((void**)&d_boundary_DEff, dataBase_.boundary_surface_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_boundary_permute, dataBase_.boundary_surface_value_vec_bytes));
+    // boundary coeff fields
+    checkCudaErrors(cudaMalloc((void**)&d_value_internal_coeffs, dataBase_.boundary_surface_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_value_boundary_coeffs, dataBase_.boundary_surface_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_gradient_internal_coeffs, dataBase_.boundary_surface_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMalloc((void**)&d_gradient_boundary_coeffs, dataBase_.boundary_surface_value_bytes * dataBase_.num_species));
+#endif
+    // computed on CPU, used on GPU, need memcpyh2d
+    checkCudaErrors(cudaMallocHost((void**)&h_boundary_rhoD, dataBase_.boundary_surface_value_bytes * dataBase_.num_species));
+    // UnityLewis
+    checkCudaErrors(cudaMallocHost((void**)&h_boundary_hai, dataBase_.boundary_surface_value_bytes * dataBase_.num_species));
+    checkCudaErrors(cudaMallocHost((void**)&h_boundary_mut_sct, dataBase_.boundary_surface_value_bytes));
+    // getter for h_boundary_xxx
+    fieldPointerMap["h_boundary_rhoD"] = h_boundary_rhoD;
+    // UnityLewis
+    fieldPointerMap["h_boundary_hai"] = h_boundary_hai;
+    fieldPointerMap["h_boundary_mut_sct"] = h_boundary_mut_sct;
 }
 
-void dfYEqn::upwindWeight()
+void dfYEqn::createNonConstantLduAndCsrFields() {
+    checkCudaErrors(cudaMalloc((void**)&d_ldu, dataBase_.csr_value_bytes));
+    d_lower = d_ldu;
+    d_diag = d_ldu + dataBase_.num_surfaces;
+    d_upper = d_ldu + dataBase_.num_cells + dataBase_.num_surfaces;
+    d_extern = d_ldu + dataBase_.num_cells + 2 * dataBase_.num_surfaces;
+#ifndef STREAM_ALLOCATOR
+    checkCudaErrors(cudaMalloc((void**)&d_source, dataBase_.cell_value_bytes));
+    checkCudaErrors(cudaMalloc((void**)&d_internal_coeffs, dataBase_.boundary_surface_value_bytes));
+    checkCudaErrors(cudaMalloc((void**)&d_boundary_coeffs, dataBase_.boundary_surface_value_bytes));
+    checkCudaErrors(cudaMalloc((void**)&d_A, dataBase_.csr_value_bytes));
+    // use d_source as d_b
+    //checkCudaErrors(cudaMalloc((void**)&d_b, dataBase_.cell_value_bytes));
+#endif
+}
+
+void dfYEqn::initNonConstantFieldsInternal(const double *y) {
+    checkCudaErrors(cudaMemcpyAsync(dataBase_.d_y, y, dataBase_.cell_value_bytes * dataBase_.num_species, cudaMemcpyHostToDevice, dataBase_.stream));
+}
+
+void dfYEqn::initNonConstantFieldsBoundary(const double *boundary_y) {
+    checkCudaErrors(cudaMemcpyAsync(dataBase_.d_boundary_y, boundary_y, dataBase_.boundary_surface_value_bytes* dataBase_.num_species, cudaMemcpyHostToDevice, dataBase_.stream));
+
+    //for (int s = 0; s < dataBase_.num_species; s++) {
+    //    update_boundary_coeffs_scalar(dataBase_.stream,
+    //            dataBase_.num_patches, dataBase_.patch_size.data(), patch_type.data(),
+    //            dataBase_.d_boundary_delta_coeffs, dataBase_.d_boundary_y + dataBase_.num_boundary_surfaces * s,
+    //            d_value_internal_coeffs + dataBase_.num_boundary_surfaces * s,
+    //            d_value_boundary_coeffs + dataBase_.num_boundary_surfaces * s,
+    //            d_gradient_internal_coeffs + dataBase_.num_boundary_surfaces * s,
+    //            d_gradient_boundary_coeffs + dataBase_.num_boundary_surfaces * s);
+    //}
+}
+
+void dfYEqn::cleanCudaResources() {
+#ifdef USE_GRAPH
+    if (graph_created) {
+        checkCudaErrors(cudaGraphExecDestroy(graph_instance));
+        checkCudaErrors(cudaGraphDestroy(graph));
+    }
+#endif
+}
+
+void dfYEqn::preProcess(const double *h_rhoD, const double *h_boundary_rhoD,
+        const double *h_hai, const double *h_boundary_hai,
+        const double *h_mut_sct, const double *h_boundary_mut_sct) {
+    //DEBUG_TRACE;
+    //checkCudaErrors(cudaStreamSynchronize(dataBase_.stream));
+    //DEBUG_TRACE;
+}
+
+void dfYEqn::process() {
+     TICK_INIT_EVENT;
+
+    // calculate reaction rates
+    TICK_START_EVENT;
+    checkCudaErrors(cudaMemset(d_RR, 0, dataBase_.cell_value_bytes * dataBase_.num_species));
+    yeqn_compute_RR(chemistrySolver_, dataBase_.stream, dataBase_.h_T, dataBase_.d_T, dataBase_.d_p, dataBase_.d_y, dataBase_.d_rho_old, d_RR);
+    TICK_END_EVENT(YEqn compute RR);
+
+    TICK_START_EVENT;
+#ifdef USE_GRAPH
+    if(!graph_created) {
+        DEBUG_TRACE;
+        checkCudaErrors(cudaStreamBeginCapture(dataBase_.stream, cudaStreamCaptureModeGlobal));
+#endif
+
+#ifdef STREAM_ALLOCATOR
+        // thermophysical fields
+        checkCudaErrors(cudaMallocAsync((void**)&d_hai, dataBase_.cell_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_mut_sct, dataBase_.cell_value_bytes, dataBase_.stream));
+        // intermediate fields
+        checkCudaErrors(cudaMallocAsync((void**)&d_grad_y, dataBase_.cell_value_vec_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_sumY_diff_error, dataBase_.cell_value_vec_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_phiUc, dataBase_.surface_value_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_DEff, dataBase_.cell_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_permute, dataBase_.cell_value_vec_bytes, dataBase_.stream));
+        // thermophysical fields
+        checkCudaErrors(cudaMallocAsync((void**)&d_boundary_hai, dataBase_.boundary_surface_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_boundary_mut_sct, dataBase_.boundary_surface_value_bytes, dataBase_.stream));
+        // intermediate fields
+        checkCudaErrors(cudaMallocAsync((void**)&d_boundary_grad_y, dataBase_.boundary_surface_value_vec_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_boundary_sumY_diff_error, dataBase_.boundary_surface_value_vec_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_boundary_phiUc, dataBase_.boundary_surface_value_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_boundary_DEff, dataBase_.boundary_surface_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_boundary_permute, dataBase_.boundary_surface_value_vec_bytes, dataBase_.stream));
+        // boundary coeff fields
+        checkCudaErrors(cudaMallocAsync((void**)&d_value_internal_coeffs, dataBase_.boundary_surface_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_value_boundary_coeffs, dataBase_.boundary_surface_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_gradient_internal_coeffs, dataBase_.boundary_surface_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_gradient_boundary_coeffs, dataBase_.boundary_surface_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_source, dataBase_.cell_value_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_internal_coeffs, dataBase_.boundary_surface_value_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_boundary_coeffs, dataBase_.boundary_surface_value_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMallocAsync((void**)&d_A, dataBase_.csr_value_bytes, dataBase_.stream));
+#endif
+
+        // UnityLewis
+        checkCudaErrors(cudaMemsetAsync(d_hai, 0, dataBase_.cell_value_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMemsetAsync(d_boundary_hai, 0, dataBase_.boundary_surface_value_bytes * dataBase_.num_species, dataBase_.stream));
+        // laminar
+        checkCudaErrors(cudaMemsetAsync(d_mut_sct, 0, dataBase_.cell_value_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMemsetAsync(d_boundary_mut_sct, 0, dataBase_.boundary_surface_value_bytes, dataBase_.stream));
+
+        checkCudaErrors(cudaMemsetAsync(dataBase_.d_diff_alphaD, 0, dataBase_.cell_value_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMemsetAsync(dataBase_.d_boundary_diff_alphaD, 0, dataBase_.boundary_surface_value_bytes, dataBase_.stream));
+        checkCudaErrors(cudaMemsetAsync(d_grad_y, 0, dataBase_.cell_value_vec_bytes * dataBase_.num_species, dataBase_.stream));
+        checkCudaErrors(cudaMemsetAsync(d_boundary_grad_y, 0, dataBase_.boundary_surface_value_vec_bytes * dataBase_.num_species, dataBase_.stream));
+        // compute diffAlphaD
+        yeqn_fvc_laplacian_scalar(dataBase_.stream, dataBase_.nccl_comm, dataBase_.neighbProcNo.data(),
+                dataBase_.num_species, dataBase_.num_cells, dataBase_.num_surfaces, dataBase_.num_boundary_surfaces,
+                dataBase_.d_owner, dataBase_.d_neighbor,
+                dataBase_.d_weight, dataBase_.d_mag_sf, dataBase_.d_delta_coeffs, dataBase_.d_volume,
+                dataBase_.d_thermo_alpha, d_hai, dataBase_.d_y, dataBase_.d_diff_alphaD, // end for internal
+                dataBase_.num_patches, dataBase_.patch_size.data(), dataBase_.patch_type_calculated.data(), dataBase_.d_boundary_face_cell,
+                dataBase_.d_boundary_weight, dataBase_.d_boundary_mag_sf, dataBase_.d_boundary_delta_coeffs,
+                dataBase_.d_boundary_thermo_alpha, d_boundary_hai, dataBase_.d_boundary_y, dataBase_.cyclicNeighbor.data(),
+                dataBase_.patchSizeOffset.data(), dataBase_.d_boundary_diff_alphaD);
+        // fvc::grad(Yi)
+        for (int s = 0; s < dataBase_.num_species; s++) {
+            fvc_grad_cell_scalar_withBC(dataBase_.stream, dataBase_.nccl_comm, dataBase_.neighbProcNo.data(),
+                    dataBase_.num_cells, dataBase_.num_surfaces, dataBase_.num_boundary_surfaces,
+                    dataBase_.d_owner, dataBase_.d_neighbor,
+                    dataBase_.d_weight, dataBase_.d_sf, dataBase_.d_y + dataBase_.num_cells * s, d_grad_y + dataBase_.num_cells * s * 3,
+                    dataBase_.num_patches, dataBase_.patch_size.data(), dataBase_.patch_type_calculated.data(), dataBase_.d_boundary_weight,
+                    dataBase_.d_boundary_face_cell, dataBase_.d_boundary_y + dataBase_.num_boundary_surfaces * s, dataBase_.d_boundary_sf,
+                    dataBase_.d_volume, dataBase_.d_boundary_mag_sf, d_boundary_grad_y + dataBase_.num_boundary_surfaces * s * 3,
+                    dataBase_.cyclicNeighbor.data(), dataBase_.patchSizeOffset.data(), dataBase_.d_boundary_delta_coeffs);
+            // update boundary coeffs
+            update_boundary_coeffs_scalar(dataBase_.stream,
+                    dataBase_.num_patches, dataBase_.patch_size.data(), patch_type.data(),
+                    dataBase_.d_boundary_delta_coeffs, dataBase_.d_boundary_y + dataBase_.num_boundary_surfaces * s,
+                    dataBase_.d_boundary_weight, 
+                    d_value_internal_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_value_boundary_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_gradient_internal_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_gradient_boundary_coeffs + dataBase_.num_boundary_surfaces * s);
+        }
+        // compute sumYDiffError and hDiffCorrFlux
+        yeqn_compute_sumYDiffError_and_hDiffCorrFlux(dataBase_.stream,
+                dataBase_.num_species, dataBase_.num_cells, dataBase_.num_boundary_surfaces,
+                dataBase_.d_thermo_rhoD, d_hai, dataBase_.d_y, d_grad_y, 
+                d_sumY_diff_error, dataBase_.d_hDiff_corr_flux,
+                d_boundary_hai, dataBase_.d_boundary_y, d_boundary_grad_y, dataBase_.d_boundary_thermo_rhoD,
+                d_boundary_sumY_diff_error, dataBase_.d_boundary_hDiff_corr_flux);
+        // compute phiUc
+        yeqn_compute_phiUc(dataBase_.stream, dataBase_.num_cells, dataBase_.num_surfaces, dataBase_.num_boundary_surfaces,
+                dataBase_.d_owner, dataBase_.d_neighbor,
+                dataBase_.d_weight, dataBase_.d_sf, d_sumY_diff_error, d_phiUc,
+                dataBase_.d_boundary_sf, d_boundary_sumY_diff_error, d_boundary_phiUc);
+        // compute upwind weight of phi and phiUc: only need internal upwind-weight
+        compute_upwind_weight(dataBase_.stream, dataBase_.num_surfaces, dataBase_.d_phi, dataBase_.d_phi_weight);
+        // compute DEff
+        // UnityLewis
+        // tmp<volScalarField> DEff = chemistry->rhoD(i) + turbulence->mut()/Sct;
+        // turbulence->mut()/Sct = 0 when laminar.
+        // double *d_DEff = d_rhoD;
+        // double *d_boundary_DEff = d_boundary_rhoD;
+        // TODO: calculate d_DEff in dfThermo
+        // yeqn_compute_DEff_via_lewisNumber(dataBase_.stream, dataBase_.num_species, dataBase_.num_cells, dataBase_.num_boundary_surfaces,
+        //         d_lewis_number, dataBase_.d_thermo_alpha, d_mut_sct, d_DEff, dataBase_.d_boundary_thermo_alpha, d_boundary_mut_sct, d_boundary_DEff);
+#ifdef USE_GRAPH
+        checkCudaErrors(cudaStreamEndCapture(dataBase_.stream, &graph));
+        checkCudaErrors(cudaGraphInstantiate(&graph_instance, graph, NULL, NULL, 0));
+        graph_created = true;
+    }
+    DEBUG_TRACE;
+    checkCudaErrors(cudaGraphLaunch(graph_instance, dataBase_.stream));
+#endif
+    // construct YiEqn and solve
+    // NOTE: ldu and yi can't be compared at the same time
+    // to compare ldu data, you should open both DEBUG_ and DEBUG_CHECK_LDU in src_gpu
+    // to compare yi, you should only open DEBUG_ in src_gpu.
+    // Besides, if you compare ldu data, be patient to keep specie_index in YEqn.H and dfYEqn.cu the same.
+// #define DEBUG_CHECK_LDU
+#if defined DEBUG_CHECK_LDU
+    int specie_index = 0;
+    for (int s = specie_index; s < specie_index + 1; s++) {
+#else
+    for (int s = 0; s < dataBase_.num_species; s++) {
+#endif
+        if (s != this->inertIndex) {
+            // reset ldu structures used cross YiEqn
+            checkCudaErrors(cudaMemsetAsync(d_ldu, 0, dataBase_.csr_value_bytes, dataBase_.stream)); // d_ldu contains d_lower, d_diag, and d_upper
+            checkCudaErrors(cudaMemsetAsync(d_source, 0, dataBase_.cell_value_bytes, dataBase_.stream));
+            checkCudaErrors(cudaMemsetAsync(d_internal_coeffs, 0, dataBase_.boundary_surface_value_bytes, dataBase_.stream));
+            checkCudaErrors(cudaMemsetAsync(d_boundary_coeffs, 0, dataBase_.boundary_surface_value_bytes, dataBase_.stream));
+            checkCudaErrors(cudaMemsetAsync(d_A, 0, dataBase_.csr_value_bytes, dataBase_.stream));
+            // use d_source as d_b
+            //checkCudaErrors(cudaMemsetAsync(d_b, 0, dataBase_.cell_value_bytes, dataBase_.stream));
+            // fvm::ddt(rho, Yi)
+            fvm_ddt_vol_scalar_vol_scalar(dataBase_.stream, dataBase_.num_cells, dataBase_.rdelta_t,
+                    dataBase_.d_rho, dataBase_.d_rho_old, dataBase_.d_y + dataBase_.num_cells * s, dataBase_.d_volume,
+                    d_diag, d_source, 1.);
+            // **calculate div weights with limitedLinear scheme**
+            // compute_limitedLinear_weight(dataBase_.stream, dataBase_.nccl_comm, dataBase_.neighbProcNo.data(), dataBase_.num_surfaces, 
+            //         dataBase_.num_cells, dataBase_.num_boundary_surfaces, dataBase_.d_owner, dataBase_.d_neighbor, dataBase_.d_mesh_dis,
+            //         dataBase_.d_weight, dataBase_.d_sf, dataBase_.d_y + dataBase_.num_cells * s, dataBase_.d_phi, dataBase_.d_phi_weight,
+            //         dataBase_.num_patches, dataBase_.patch_size.data(), patch_type.data(), dataBase_.d_boundary_weight, dataBase_.d_boundary_face_cell,
+            //         dataBase_.d_boundary_y + dataBase_.num_boundary_surfaces * s, dataBase_.d_boundary_sf, dataBase_.d_volume, 
+            //         dataBase_.d_boundary_mag_sf, dataBase_.d_boundary_phi, dataBase_.cyclicNeighbor.data(), dataBase_.patchSizeOffset.data(),
+            //         dataBase_.d_boundary_delta_coeffs);
+
+            // fvmDiv(phi, Yi)
+            fvm_div_scalar(dataBase_.stream, dataBase_.num_surfaces, dataBase_.d_owner, dataBase_.d_neighbor,
+                    dataBase_.d_phi, dataBase_.d_phi_weight,
+                    d_lower, d_upper, d_diag, // end for internal
+                    dataBase_.num_patches, dataBase_.patch_size.data(), patch_type.data(),
+                    dataBase_.d_boundary_phi,
+                    d_value_internal_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_value_boundary_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_internal_coeffs, d_boundary_coeffs, 1.);
+            // fvmDiv(phiUc, Yi)
+            fvm_div_scalar(dataBase_.stream, dataBase_.num_surfaces, dataBase_.d_owner, dataBase_.d_neighbor,
+                    d_phiUc, dataBase_.d_phi_weight,
+                    d_lower, d_upper, d_diag, // end for internal
+                    dataBase_.num_patches, dataBase_.patch_size.data(), patch_type.data(),
+                    d_boundary_phiUc,
+                    d_value_internal_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_value_boundary_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_internal_coeffs, d_boundary_coeffs, 1.);
+            // fvm::laplacian(DEff(), Yi)
+            fvm_laplacian_scalar(dataBase_.stream, dataBase_.num_surfaces, dataBase_.num_boundary_surfaces,
+                    dataBase_.d_owner, dataBase_.d_neighbor,
+                    dataBase_.d_weight, dataBase_.d_mag_sf, dataBase_.d_delta_coeffs,
+                    dataBase_.d_thermo_rhoD + dataBase_.num_cells * s,
+                    d_lower, d_upper, d_diag, // end for internal
+                    dataBase_.num_patches, dataBase_.patch_size.data(), patch_type.data(),
+                    dataBase_.d_boundary_mag_sf, dataBase_.d_boundary_thermo_rhoD + dataBase_.num_boundary_surfaces * s,
+                    d_gradient_internal_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_gradient_boundary_coeffs + dataBase_.num_boundary_surfaces * s,
+                    d_internal_coeffs, d_boundary_coeffs, -1.);
+            fvc_to_source_scalar(dataBase_.stream, dataBase_.num_cells, dataBase_.d_volume, d_RR + dataBase_.num_cells * s, d_source);
+#ifndef DEBUG_CHECK_LDU
+            // ldu to csr
+            // use d_source as d_b
+            ldu_to_csr_scalar(dataBase_.stream, dataBase_.num_cells, dataBase_.num_surfaces, dataBase_.num_boundary_surfaces,
+                    dataBase_.num_Nz, dataBase_.d_boundary_face_cell, dataBase_.d_ldu_to_csr_index, dataBase_.num_patches,
+                    dataBase_.patch_size.data(), patch_type.data(), d_ldu, d_source, d_internal_coeffs, d_boundary_coeffs, d_A);
+            // TODO with solver of database_, solverIndex is no need any more.
+            //solverIndex ++;
+            solve(s);
+#endif
+        }
+        if (s == dataBase_.num_species - 1)
+            num_iteration++;
+    }
+    TICK_END_EVENT(YEqn assembly and solve for all species);
+
+    TICK_START_EVENT;
+    // compute y_inertIndex
+    yeqn_compute_y_inertIndex(dataBase_.stream, dataBase_.num_species, inertIndex, dataBase_.num_cells, dataBase_.d_y);
+    // correct boundary conditions
+    for (int s = 0; s < dataBase_.num_species; s++) {
+        correct_boundary_conditions_scalar(dataBase_.stream, dataBase_.nccl_comm, dataBase_.neighbProcNo.data(),
+                dataBase_.num_boundary_surfaces, dataBase_.num_patches, dataBase_.patch_size.data(),
+                patch_type.data(), dataBase_.d_boundary_delta_coeffs, dataBase_.d_boundary_face_cell,
+                dataBase_.d_y + dataBase_.num_cells * s, dataBase_.d_boundary_y + dataBase_.num_boundary_surfaces * s, 
+                dataBase_.cyclicNeighbor.data(), dataBase_.patchSizeOffset.data(), dataBase_.d_boundary_weight);
+    }
+    TICK_END_EVENT(YEqn post process for all species correctBC);
+
+    TICK_START_EVENT;
+    // copy y and boundary_y to host
+    TICK_END_EVENT(YEqn post process for all species copy back);
+
+    TICK_START_EVENT;
+#ifdef STREAM_ALLOCATOR
+    // thermophysical fields
+    //checkCudaErrors(cudaFreeAsync(d_rhoD, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_hai, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_mut_sct, dataBase_.stream));
+    // intermediate fields
+    checkCudaErrors(cudaFreeAsync(d_grad_y, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_sumY_diff_error, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_phiUc, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_DEff, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_permute, dataBase_.stream));
+
+    // thermophysical fields
+    //checkCudaErrors(cudaFreeAsync(d_boundary_rhoD, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_boundary_hai, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_boundary_mut_sct, dataBase_.stream));
+    // intermediate fields
+    checkCudaErrors(cudaFreeAsync(d_boundary_grad_y, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_boundary_sumY_diff_error, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_boundary_phiUc, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_boundary_DEff, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_boundary_permute, dataBase_.stream));
+
+    // boundary coeff fields
+    checkCudaErrors(cudaFreeAsync(d_value_internal_coeffs, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_value_boundary_coeffs, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_gradient_internal_coeffs, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_gradient_boundary_coeffs, dataBase_.stream));
+
+    checkCudaErrors(cudaFreeAsync(d_source, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_internal_coeffs, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_boundary_coeffs, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_A, dataBase_.stream));
+#endif
+    TICK_END_EVENT(YEqn post process for all species free);
+    sync();
+}
+
+void dfYEqn::solve(int speciesIndex) {    
+    TICK_INIT_EVENT;
+    TICK_START_EVENT;
+    dataBase_.solve(num_iteration, AMGXSetting::u_setting, d_A, dataBase_.d_y + dataBase_.num_cells * speciesIndex, d_source);
+    TICK_END_EVENT(YEqn solve one specie);
+}
+
+void dfYEqn::postProcess(double *h_y, double *h_boundary_y) {
+    checkCudaErrors(cudaMemcpyAsync(dataBase_.h_y, dataBase_.d_y, dataBase_.cell_value_bytes * dataBase_.num_species, cudaMemcpyDeviceToHost, dataBase_.stream));
+    checkCudaErrors(cudaMemcpyAsync(dataBase_.h_boundary_y, dataBase_.d_boundary_y, dataBase_.boundary_surface_value_bytes * dataBase_.num_species, cudaMemcpyDeviceToHost, dataBase_.stream));
+    sync();
+}
+
+void dfYEqn::sync() {
+    checkCudaErrors(cudaStreamSynchronize(dataBase_.stream));
+}
+
+void dfYEqn::yeqn_compute_thermo_alpha(cudaStream_t stream,
+        int num_cells, const double *rhoD, double *thermo_alpha,
+        int num_boundary_surfaces, const double *boundary_rhoD, double *boundary_thermo_alpha)
 {
     size_t threads_per_block = 1024;
-    size_t blocks_per_grid = (num_faces + threads_per_block - 1) / threads_per_block;
-    getUpwindWeight<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_faces, dataBase_.d_phi, dataBase_.d_weight_upwind);
+    size_t blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
+    yeqn_compute_thermo_alpha_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells, rhoD, thermo_alpha);
+    blocks_per_grid = (num_boundary_surfaces + threads_per_block - 1) / threads_per_block;
+    yeqn_compute_thermo_alpha_boundary<<<blocks_per_grid, threads_per_block, 0, stream>>>(
+            num_boundary_surfaces, boundary_rhoD, boundary_thermo_alpha);
 }
 
-void dfYEqn::fvm_laplacian_and_sumYDiffError_diffAlphaD_hDiffCorrFlux(std::vector<double *> Y_old, std::vector<double *> boundary_Y,
-        std::vector<const double *> hai, std::vector<double *> boundary_hai,
-        std::vector<const double *> rhoD, std::vector<double *> boundary_rhoD,
-        const double *mut_Sct, const double *boundary_mut_Sct, const double *alpha)
+void dfYEqn::yeqn_compute_DEff_via_lewisNumber(cudaStream_t stream, int num_species, int num_cells, int num_boundary_surfaces, 
+        double *lewis_number, const double *alpha, const double *mut_sct, double *DEff,
+        const double *boundary_alpha, const double *boundary_mut_sct, double *boundary_DEff)
 {
-    clock_t start = std::clock();
-    // initialize variables in each time step
-    // checkCudaErrors(cudaMemcpyAsync(d_boundary_mut_sct, boundary_mut_Sct, boundary_face_bytes, cudaMemcpyHostToDevice, stream));
-    // checkCudaErrors(cudaMemcpyAsync(d_mut_Sct, mut_Sct, cell_bytes, cudaMemcpyHostToDevice, stream));
-    // checkCudaErrors(cudaMemcpyAsync(d_alpha, alpha, cell_bytes, cudaMemcpyHostToDevice, stream));
-
-    checkCudaErrors(cudaMemsetAsync(d_sum_rhoD_grady, 0, 3 * cell_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(d_sum_boundary_rhoD_grady, 0, 3 * boundary_face_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(d_sum_hai_rhoD_grady, 0, 3 * cell_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(d_sum_boundary_hai_rhoD_grady, 0, 3 * boundary_face_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(d_sum_hai_y, 0, cell_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(d_sum_boundary_hai_y, 0, boundary_face_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(dataBase_.d_hDiffCorrFlux, 0, 3 * cell_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(dataBase_.d_boundary_hDiffCorrFlux, 0, 3 * boundary_face_bytes, stream));
-    checkCudaErrors(cudaMemsetAsync(dataBase_.d_diffAlphaD, 0, cell_bytes, stream));
-
-    size_t threads_per_block, blocks_per_grid;
-    for (size_t i = 0; i < num_species; ++i)
-    {
-        if (uploadData)
-        {
-            checkCudaErrors(cudaMemcpyAsync(dataBase_.d_Y + i * num_cells, Y_old[i], cell_bytes, cudaMemcpyHostToDevice, stream));
-            checkCudaErrors(cudaMemcpyAsync(d_boundary_Y + i * num_boundary_faces, boundary_Y[i], boundary_face_bytes,
-                        cudaMemcpyHostToDevice, stream));
-        }
-        // checkCudaErrors(cudaMemcpyAsync(d_hai + i * num_cells, hai[i], cell_bytes, cudaMemcpyHostToDevice, stream));
-        // checkCudaErrors(cudaMemcpyAsync(d_boundary_hai + i * num_boundary_faces, boundary_hai[i], boundary_face_bytes,
-        //             cudaMemcpyHostToDevice, stream));
-        // TODO: check why rhoD has to upload even in the UnityLewis case
-        checkCudaErrors(cudaMemcpyAsync(d_rhoD + i * num_cells, rhoD[i], cell_bytes, cudaMemcpyHostToDevice, stream));
-        checkCudaErrors(cudaMemcpyAsync(d_boundary_rhoD + i * num_boundary_faces, boundary_rhoD[i], boundary_face_bytes,
-                    cudaMemcpyHostToDevice, stream));
-    }
-    // initialize boundary coeffs (must after the update of d_boundary_Y)
-    threads_per_block = 1024;
-    blocks_per_grid = (dataBase_.num_boundary_faces + threads_per_block - 1) / threads_per_block;
-    yeqn_update_BoundaryCoeffs_kernel<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_boundary_faces, num_species,
-            dataBase_.d_boundary_phi,
-            dataBase_.d_internal_coeffs_Y,
-            dataBase_.d_boundary_coeffs_Y,
-            dataBase_.d_laplac_internal_coeffs_Y,
-            dataBase_.d_laplac_boundary_coeffs_Y,
-            dataBase_.d_boundary_YpatchType,
-            d_boundary_Y, 
-            dataBase_.d_boundary_deltaCoeffs,
-            dataBase_.d_bouPermedIndex,
-            uploadData);   
-
-    threads_per_block = 1024;
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    yeqn_calculate_rhoD_alpha_via_nuEff_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_species,
-            d_rhoD, dataBase_.d_nuEff, dataBase_.d_rho_new, d_alpha);
-    // // check rhoD
-    // checkCudaErrors(cudaStreamSynchronize(stream));
-    // double *h_rhoD = new double[num_cells];
-    // cudaMemcpy(h_rhoD, d_rhoD + num_cells * 5, num_cells * sizeof(double), cudaMemcpyDeviceToHost);
-    // for (int i = 0; i < num_boundary_faces; i++)
-    // {
-    //     printf("Y_H_rhoD[%d] = %e\n", i, h_rhoD[i]);
-    // }
-
-    blocks_per_grid = (num_boundary_faces + threads_per_block - 1) / threads_per_block;
-    yeqn_calculate_rhoD_alpha_via_nuEff_boundary<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_boundary_faces, num_species, dataBase_.d_bouPermedIndex,
-            d_boundary_rhoD, dataBase_.d_boundary_nuEff, dataBase_.d_boundary_rho, dataBase_.d_boundary_alpha);
-    clock_t end = std::clock();
-    fprintf(stderr, "GPU memcpy time in YEqn = %lf s\n", double(end - start) / double(CLOCKS_PER_SEC));
-
-    // fvc::grad(Yi)
-    threads_per_block = 1024;
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    fvc_grad_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_species,
-            d_A_csr_row_index, d_A_csr_col_index, d_A_csr_diag_index,
-            dataBase_.d_face_vector, dataBase_.d_weight, dataBase_.d_Y,
-            dataBase_.d_volume, d_grady);
-    blocks_per_grid = (num_boundary_cells + threads_per_block - 1) / threads_per_block;
-    fvc_grad_boundary<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_boundary_cells, num_boundary_faces, num_species,
-            dataBase_.d_boundary_cell_offset, dataBase_.d_boundary_cell_id, dataBase_.d_bouPermedIndex,
-            dataBase_.d_boundary_face_vector, d_boundary_Y,
-            dataBase_.d_volume, d_grady, d_grady, uploadData);
-    // check
-    // checkCudaErrors(cudaStreamSynchronize(stream));
-    // double *h_grady = new double[num_cells * 3];
-    // cudaMemcpy(h_grady, d_grady + num_cells * 3 * 5, (num_cells * 3) * sizeof(double), cudaMemcpyDeviceToHost);
-    // for (int i = 0; i < num_cells; i++)
-    // {
-    //     printf("d_grady[%d] = (%lf, %lf, %lf)\n", i, h_grady[i * 3], h_grady[i * 3 + 1], h_grady[i * 3 + 2]);
-    // }
-
-    blocks_per_grid = (num_boundary_cells + threads_per_block - 1) / threads_per_block;
-    correct_boundary_conditions<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_boundary_cells, num_boundary_faces, num_species,
-            dataBase_.d_boundary_cell_offset, dataBase_.d_boundary_cell_id,
-            dataBase_.d_boundary_face_vector, dataBase_.d_boundary_face,
-            d_grady, d_boundary_grady, dataBase_.d_boundary_deltaCoeffs, dataBase_.d_Y, d_boundary_Y, dataBase_.d_boundary_YpatchType);
-
-    // sum(chemistry->hai(i)*chemistry->rhoD(i)*fvc::grad(Yi))
-    // sum(chemistry->rhoD(i)*fvc::grad(Yi)), also be called sumYDiffError
-    // sum(chemistry->hai(i)*Yi)
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    sumError_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_species,
-            d_hai, d_rhoD, dataBase_.d_Y, d_grady,
-            d_sum_hai_rhoD_grady, d_sum_rhoD_grady, d_sum_hai_y);
-    blocks_per_grid = (num_boundary_faces + threads_per_block - 1) / threads_per_block;
-    sumError_boundary<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_boundary_faces, num_species,
-            dataBase_.d_bouPermedIndex,
-            d_boundary_hai, d_boundary_rhoD, d_boundary_Y, d_boundary_grady,
-            d_sum_boundary_hai_rhoD_grady, d_sum_boundary_rhoD_grady, d_sum_boundary_hai_y, uploadData);
-
-    // compute diffAlphaD
-    // TODO non-resonable, fvc_laplacian_internal will failed if threads_per_block = 1024
-    threads_per_block = 512;
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    fvc_laplacian_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_species,
-            d_A_csr_row_index, d_A_csr_col_index, d_A_csr_diag_index,
-            d_alpha, d_hai, dataBase_.d_Y,
-            dataBase_.d_weight, dataBase_.d_face, dataBase_.d_deltaCoeffs,
-            dataBase_.d_volume, dataBase_.d_diffAlphaD);
-
-    // fvm::laplacian
-    // TODO non-resonable, fvm_laplacian_uncorrected_scalar_internal will failed if threads_per_block = 1024
-    threads_per_block = 512;
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    fvm_laplacian_uncorrected_scalar_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_faces, num_species, inertIndex,
-            d_A_csr_row_index, d_A_csr_col_index, d_A_csr_diag_index,
-            d_mut_Sct, d_rhoD, dataBase_.d_weight, dataBase_.d_face, dataBase_.d_deltaCoeffs,
-            -1., d_A_csr, d_A_csr);
-    // TODO non-resonable, fvm_laplacian_uncorrected_scalar_boundary will failed if threads_per_block = 1024
-    threads_per_block = 512;
-    blocks_per_grid = (num_boundary_cells + threads_per_block - 1) / threads_per_block;
-    fvm_laplacian_uncorrected_scalar_boundary<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_faces, num_boundary_cells, num_boundary_faces,
-            num_species, inertIndex,
-            d_A_csr_row_index, d_A_csr_diag_index,
-            dataBase_.d_boundary_cell_offset, dataBase_.d_boundary_cell_id,
-            d_boundary_mut_sct, d_boundary_rhoD, dataBase_.d_boundary_face, dataBase_.d_bouPermedIndex,
-            dataBase_.d_laplac_internal_coeffs_Y, dataBase_.d_laplac_boundary_coeffs_Y,
-            -1., d_A_csr, d_b, d_A_csr, d_b);
-
-    uploadData = false;
-
-    threads_per_block = 1024;
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    calculate_hDiffCorrFlux<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells,
-            d_sum_hai_rhoD_grady, d_sum_rhoD_grady, d_sum_hai_y, dataBase_.d_hDiffCorrFlux);
-    blocks_per_grid = (num_boundary_faces + threads_per_block - 1) / threads_per_block;
-    calculate_hDiffCorrFlux<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_boundary_faces,
-            d_sum_boundary_hai_rhoD_grady, d_sum_boundary_rhoD_grady, d_sum_boundary_hai_y, dataBase_.d_boundary_hDiffCorrFlux);
+    size_t threads_per_block = 1024;
+    size_t blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
+    yeqn_compute_DEff_kernel<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_species, num_cells,
+            lewis_number, alpha, mut_sct, DEff);
+    blocks_per_grid = (num_boundary_surfaces + threads_per_block - 1) / threads_per_block;
+    yeqn_compute_DEff_kernel<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_species, num_boundary_surfaces,
+            lewis_number, boundary_alpha, boundary_mut_sct, boundary_DEff);
 }
 
-void dfYEqn::fvm_ddt()
+void dfYEqn::yeqn_compute_RR(dfChemistrySolver& chemistrySolver, cudaStream_t stream, const double *h_T, const double *d_T,
+        const double *p, const double *y, const double *rho, double *RR)
 {
-    // fvm::ddt(rho, Yi)
-    size_t threads_per_block, blocks_per_grid;
-    threads_per_block = 1024;
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    fvm_ddt_kernel_scalar<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_faces, num_species, inertIndex,
-            dataBase_.rdelta_t,
-            d_A_csr_row_index, d_A_csr_diag_index,
-            dataBase_.d_rho_old, dataBase_.d_rho_new, dataBase_.d_volume, dataBase_.d_Y,
-            d_A_csr, d_b, d_A_csr, d_b);
+    chemistrySolver.Inference(h_T, d_T, p, y, rho, RR);
 }
 
-void dfYEqn::fvm_div_phi()
+void dfYEqn::yeqn_fvc_laplacian_scalar(cudaStream_t stream, ncclComm_t comm, const int *neighbor_peer,
+        int num_species, int num_cells, int num_surfaces, int num_boundary_surfaces,
+        const int *lowerAddr, const int *upperAddr,
+        const double *weight, const double *mag_sf, const double *delta_coeffs, const double *volume,
+        const double *thermo_alpha, const double *hai, const double *vf, double *output, // end for internal
+        int num_patches, const int *patch_size, const int *patch_type, const int *boundary_cell_face,
+        const double *boundary_weight, const double *boundary_mag_sf, const double *boundary_delta_coeffs,
+        const double *boundary_thermo_alpha, const double *boundary_hai, const double *boundary_vf,
+        const int *cyclicNeighbor, const int *patchSizeOffset, double *boundary_output)
 {
-    // mvConvection->fvmDiv(phi, Yi)
-    size_t threads_per_block, blocks_per_grid;
-    threads_per_block = 512;
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    fvm_div_internal_scalar<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_faces, num_species, inertIndex,
-            d_A_csr_row_index, d_A_csr_diag_index, dataBase_.d_weight_upwind, dataBase_.d_phi,
-            d_A_csr, d_A_csr);
-    blocks_per_grid = (num_boundary_cells + threads_per_block - 1) / threads_per_block;
-    fvm_div_boundary_scalar<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_faces, num_boundary_cells, num_boundary_faces, num_species, inertIndex,
-            d_A_csr_row_index, d_A_csr_diag_index, dataBase_.d_boundary_phi,
-            dataBase_.d_boundary_cell_offset, dataBase_.d_boundary_cell_id,
-            dataBase_.d_internal_coeffs_Y, dataBase_.d_boundary_coeffs_Y,
-            d_A_csr, d_A_csr, d_b, d_b);
-}
+    size_t threads_per_block = 1024;
+    size_t blocks_per_grid = (num_surfaces + threads_per_block - 1) / threads_per_block;
+    yeqn_fvc_laplacian_scalar_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_species, num_cells, num_surfaces,
+            lowerAddr, upperAddr, mag_sf, delta_coeffs, weight, thermo_alpha, hai, vf, output);
 
-void dfYEqn::fvm_div_phiUc()
-{
-    size_t threads_per_block, blocks_per_grid;
-
-    // compue phiUc
-    threads_per_block = 512;
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    calculate_phiUc_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells,
-            d_A_csr_row_index, d_A_csr_col_index, d_A_csr_diag_index,
-            dataBase_.d_face_vector, dataBase_.d_weight, d_sum_rhoD_grady, d_phiUc);
-    blocks_per_grid = (num_boundary_faces + threads_per_block - 1) / threads_per_block;
-    calculate_phiUc_boundary<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_boundary_faces,
-            dataBase_.d_boundary_cell_offset, dataBase_.d_boundary_cell_id,
-            dataBase_.d_boundary_face_vector, d_sum_boundary_rhoD_grady, d_phiUc_boundary);
-
-    // mvConvection->fvmDiv(phiUc, Yi)
-    blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    fvm_div_internal_scalar<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_faces, num_species, inertIndex,
-            d_A_csr_row_index, d_A_csr_diag_index, dataBase_.d_weight_upwind, d_phiUc,
-            d_A_csr, d_A_csr);
-    blocks_per_grid = (num_boundary_cells + threads_per_block - 1) / threads_per_block;
-    fvm_div_boundary_scalar<<<blocks_per_grid, threads_per_block, 0, stream>>>(
-            num_cells, num_faces, num_boundary_cells, num_boundary_faces, num_species, inertIndex,
-            d_A_csr_row_index, d_A_csr_diag_index, d_phiUc_boundary,
-            dataBase_.d_boundary_cell_offset, dataBase_.d_boundary_cell_id,
-            dataBase_.d_internal_coeffs_Y, dataBase_.d_boundary_coeffs_Y,
-            d_A_csr, d_A_csr, d_b, d_b);
-}
-
-void dfYEqn::checkValue(bool print, char *filename)
-{
-    checkCudaErrors(cudaMemcpyAsync(h_A_csr, d_A_csr + (num_cells + num_faces) * 5, (num_cells + num_faces) * sizeof(double), cudaMemcpyDeviceToHost, stream)); // H
-    checkCudaErrors(cudaMemcpyAsync(h_b, d_b + num_cells * 5, num_cells * sizeof(double), cudaMemcpyDeviceToHost, stream)); // H
-
-    // Synchronize stream
-    checkCudaErrors(cudaStreamSynchronize(stream));
-    if (print)
-    {
-        for (int i = 0; i < (num_faces + num_cells); i++)
-            fprintf(stderr, "h_A_csr[%d]: %.15lf\n", i, h_A_csr[i]);
-        for (int i = 0; i < num_cells; i++)
-            fprintf(stderr, "h_b[%d]: %.15lf\n", i, h_b[i]);
-    }
-
-    char *input_file = filename;
-    FILE *fp = fopen(input_file, "rb+");
-    if (fp == NULL)
-    {
-        fprintf(stderr, "Failed to open input file: %s!\n", input_file);
-    }
-
-    int readfile = 0;
-    double *of_b = new double[num_cells];
-    double *of_A = new double[num_faces + num_cells];
-    readfile = fread(of_b, num_cells * sizeof(double), 1, fp);
-    readfile = fread(of_A, (num_faces + num_cells) * sizeof(double), 1, fp);
-
-    std::vector<double> h_A_of_vec_1mtx(num_faces + num_cells, 0);
-    for (int i = 0; i < num_faces + num_cells; i++)
-    {
-        h_A_of_vec_1mtx[i] = of_A[dataBase_.tmpPermutatedList[i]];
-    }
-    if (print)
-    {
-        for (int i = 0; i < (num_faces + num_cells); i++)
-            printf("h_A_of_vec_1mtx[%d]: %.15lf\n", i, h_A_of_vec_1mtx[i]);
-        for (int i = 0; i < num_cells; i++)
-            printf("h_b_of_vec[%d]: %.15lf\n", i, of_b[i]);
-    }
-
-    fprintf(stderr, "check of h_A_csr\n");
-    checkVectorEqual(num_faces + num_cells, h_A_of_vec_1mtx.data(), h_A_csr, 1e-5);
-    fprintf(stderr, "check of h_b\n");
-    checkVectorEqual(num_cells, of_b, h_b, 1e-5);
-}
-
-void dfYEqn::solve()
-{
-    checkCudaErrors(cudaStreamSynchronize(stream));
-
-    int nNz = num_cells + num_faces; // matrix entries
-    if (num_iteration == 0)          // first interation
-    {
-        printf("Initializing AmgX Linear Solver\n");
-        int solverIndex = 0;
-        for (auto &solver : YSolverSet)
-        {
-            solver->setOperator(num_cells, nNz, d_A_csr_row_index, d_A_csr_col_index, d_A_csr + solverIndex * nNz);
-            ++solverIndex;
-        }
-    }
-    else
-    {
-        int solverIndex = 0;
-        for (auto &solver : YSolverSet)
-        {
-            solver->updateOperator(num_cells, nNz, d_A_csr + solverIndex * nNz);
-            ++solverIndex;
-        }
-    }
-    int mtxIndex = 0;
-    for (size_t i = 0; i < num_species; ++i)
-    {
-        if (i == inertIndex)
+    int offset = 0;
+    for (int i = 0; i < num_patches; i++) {
+        if (patch_size[i] == 0) continue;
+        threads_per_block = 256;
+        blocks_per_grid = (patch_size[i] + threads_per_block - 1) / threads_per_block;
+        // TODO: just basic patch type now
+        if (patch_type[i] == boundaryConditions::zeroGradient) {
+            //fprintf(stderr, "patch_type is zeroGradient\n");
+            // snGrad of zeroGradient is 0, thus boundary is 0.
+        } else if (patch_type[i] == boundaryConditions::fixedValue
+                || patch_type[i] == boundaryConditions::calculated) {
+            //fprintf(stderr, "patch_type is fixedValue\n");
+            yeqn_fvc_laplacian_scalar_boundary_fixedValue<<<blocks_per_grid, threads_per_block, 0, stream>>>(
+                    num_species, num_cells, num_boundary_surfaces, patch_size[i], offset, boundary_cell_face,
+                    boundary_mag_sf, boundary_delta_coeffs,
+                    boundary_thermo_alpha, boundary_hai, vf, boundary_vf, output);
+        } else if (patch_type[i] == boundaryConditions::cyclic) {
+            yeqn_fvc_laplacian_scalar_boundary_cyclic<<<blocks_per_grid, threads_per_block, 0, stream>>>(
+                    num_species, num_cells, num_boundary_surfaces, patch_size[i], offset, patchSizeOffset[cyclicNeighbor[i]], 
+                    boundary_cell_face, boundary_mag_sf, boundary_delta_coeffs,
+                    boundary_thermo_alpha, boundary_hai, vf, boundary_vf, output);
+        } else if (patch_type[i] == boundaryConditions::processor
+                    || patch_type[i] == boundaryConditions::processorCyclic) {
+            yeqn_fvc_laplacian_scalar_boundary_processor<<<blocks_per_grid, threads_per_block, 0, stream>>>(
+                    num_species, num_cells, num_boundary_surfaces, patch_size[i], offset, boundary_cell_face,
+                    boundary_mag_sf, boundary_delta_coeffs, boundary_weight,
+                    boundary_thermo_alpha, boundary_hai, vf, boundary_vf, output);
+            offset += 2 * patch_size[i]; // patchNeighbourFields and patchInternalFields
             continue;
-
-        YSolverSet[mtxIndex]->solve(num_cells, dataBase_.d_Y + i * num_cells, d_b + mtxIndex * num_cells);
-        ++mtxIndex;
+        } else {
+            fprintf(stderr, "%s %d, boundaryConditions other than zeroGradient are not support yet!\n", __FILE__, __LINE__);
+        }
+        offset += patch_size[i];
     }
 
-    size_t threads_per_block, blocks_per_grid;
+    // divide cell volume
     threads_per_block = 1024;
     blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    compute_inertIndex_y<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells, num_species, inertIndex, dataBase_.d_Y);
-    checkCudaErrors(cudaMemcpyAsync(h_psi, dataBase_.d_Y, num_species * cell_bytes, cudaMemcpyDeviceToHost, stream));
+    yeqn_divide_cell_volume_scalar<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells, volume, output);
 
-    num_iteration++;
-    // checkCudaErrors(cudaStreamSynchronize(stream));
-    // for (size_t i = 0; i < num_cells; i++)
-    //     fprintf(stderr, "h_species_gpu[%d]: %.5e\n", i, h_psi[i + 0 * num_cells]);
+    // TODO: correct boundary condition
+    blocks_per_grid = (num_boundary_surfaces + threads_per_block - 1) / threads_per_block;
+    yeqn_buildBC_scalar<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_boundary_surfaces,
+            boundary_cell_face, output, boundary_output);
+    offset = 0;
+    for (int i = 0; i < num_patches; i++) {
+        if (patch_size[i] == 0) continue;
+        if (patch_type[i] == boundaryConditions::processor) {
+            correct_boundary_conditions_processor_scalar(stream, comm, neighbor_peer[i], patch_size[i], offset,
+                    output, boundary_cell_face, boundary_output);
+            offset += 2 * patch_size[i];
+        } else if (patch_type[i] == boundaryConditions::processorCyclic) {
+            correct_boundary_conditions_processor_scalar(stream, comm, neighbor_peer[i], patch_size[i], offset,
+                    output, boundary_cell_face, boundary_output);
+            offset += 2 * patch_size[i];
+        } else {
+            offset += patch_size[i];
+        }
+    }
 }
 
-void dfYEqn::sync()
-{
-    checkCudaErrors(cudaStreamSynchronize(stream));
-}
-
-void dfYEqn::updatePsi(double *Psi, int speciesIndex)
-{
-    checkCudaErrors(cudaStreamSynchronize(stream));
-    memcpy(Psi, h_psi + speciesIndex * num_cells, cell_bytes);
-}
-
-void dfYEqn::correctBoundaryConditions()
+void dfYEqn::yeqn_compute_sumYDiffError_and_hDiffCorrFlux(cudaStream_t stream, int num_species, int num_cells, int num_boundary_surfaces,
+        const double *rhoD, const double *hai, const double *y, const double *grad_y,
+        double *sumY_diff_error, double *hDiff_corr_flux,
+        const double *boundary_hai, const double *boundary_y, const double *boundary_grad_y, const double *boundary_rhoD,
+        double *boundary_sumY_diff_error, double *boundary_hDiff_corr_flux)
 {
     size_t threads_per_block = 1024;
-    size_t blocks_per_grid = (num_boundary_cells + threads_per_block - 1) / threads_per_block;
-    yeqn_correct_BoundaryConditions_kernel<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells, num_boundary_cells, num_boundary_faces, num_species,
-                                                                                              dataBase_.d_boundary_cell_offset, dataBase_.d_boundary_cell_id,
-                                                                                              dataBase_.d_Y, d_boundary_Y, dataBase_.d_boundary_YpatchType);
-    // double *h_boundary_Y = new double[num_boundary_faces];
-    // cudaMemcpy(h_boundary_Y, d_boundary_Y, num_boundary_faces * sizeof(double), cudaMemcpyDeviceToHost);
-    // for (int i = 0; i < num_boundary_faces; i++)
-    // {
-    //     printf("h_boundary_GPU[%d] = %e\n", i, h_boundary_Y[i]);
-    // }
+    size_t blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
+    yeqn_sumError_and_compute_hDiffCorrFlux<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_species, num_cells,
+            rhoD, hai, y, grad_y, sumY_diff_error, hDiff_corr_flux);
+    blocks_per_grid = (num_boundary_surfaces + threads_per_block - 1) / threads_per_block;
+    yeqn_sumError_and_compute_hDiffCorrFlux<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_species, num_boundary_surfaces,
+            boundary_rhoD, boundary_hai, boundary_y, boundary_grad_y, boundary_sumY_diff_error, boundary_hDiff_corr_flux);
 }
 
-dfYEqn::~dfYEqn()
+void dfYEqn::yeqn_compute_phiUc(cudaStream_t stream, int num_cells, int num_surfaces, int num_boundary_surfaces,
+        const int *lowerAddr, const int *upperAddr,
+        const double *weight, const double *sf, const double *sumY_diff_error, double *phiUc,
+        const double *boundary_sf, const double *boundary_sumY_diff_error, double *boundary_phiUc)
 {
+    size_t threads_per_block = 1024;
+    size_t blocks_per_grid = (num_surfaces + threads_per_block - 1) / threads_per_block;
+    yeqn_compute_phiUc_internal<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells, num_surfaces,
+            lowerAddr, upperAddr, weight, sf, sumY_diff_error, phiUc);
+    blocks_per_grid = (num_boundary_surfaces + threads_per_block - 1) / threads_per_block;
+    yeqn_compute_phiUc_boundary<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_boundary_surfaces,
+            boundary_sf, boundary_sumY_diff_error, boundary_phiUc);
 }
+
+void dfYEqn::yeqn_compute_y_inertIndex(cudaStream_t stream, int num_species, int inertIndex, int num_cells, double *y)
+{
+    size_t threads_per_block = 1024;
+    size_t blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
+    yeqn_compute_y_inertIndex_kernel<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_species, inertIndex, num_cells, y);
+}
+
+// #if defined DEBUG_
+void dfYEqn::comparediffAlphaD(const double *diffAlphaD, const double *boundary_diffAlphaD, bool printFlag)
+{
+    DEBUG_TRACE;
+    std::vector<double> h_diffAlphaD;
+    h_diffAlphaD.resize(dataBase_.num_cells);
+    checkCudaErrors(cudaMemcpy(h_diffAlphaD.data(), dataBase_.d_diff_alphaD, dataBase_.cell_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_diffAlphaD\n");
+    checkVectorEqual(dataBase_.num_cells, diffAlphaD, h_diffAlphaD.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+    std::vector<double> h_boundary_diffAlphaD;
+    h_boundary_diffAlphaD.resize(dataBase_.num_boundary_surfaces);
+    checkCudaErrors(cudaMemcpy(h_boundary_diffAlphaD.data(), dataBase_.d_boundary_diff_alphaD, dataBase_.boundary_surface_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_boundary_diffAlphaD\n");
+    checkVectorEqual(dataBase_.num_boundary_surfaces, boundary_diffAlphaD, h_boundary_diffAlphaD.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+}
+
+void dfYEqn::comparegradyi(const double *grad_yi, const double *boundary_grad_yi, int specie_index, bool printFlag)
+{
+    DEBUG_TRACE;
+    permute_vector_d2h(dataBase_.stream, dataBase_.num_cells, d_grad_y + dataBase_.num_cells * specie_index * 3, d_permute);
+    permute_vector_d2h(dataBase_.stream, dataBase_.num_boundary_surfaces, d_boundary_grad_y + dataBase_.num_boundary_surfaces * specie_index * 3, d_boundary_permute);
+
+    std::vector<double> h_grad_yi;
+    h_grad_yi.resize(dataBase_.num_cells * 3);
+    checkCudaErrors(cudaMemcpy(h_grad_yi.data(), d_permute, dataBase_.cell_value_vec_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_grad_yi\n");
+    checkVectorEqual(dataBase_.num_cells * 3, grad_yi, h_grad_yi.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+    std::vector<double> h_boundary_grad_yi;
+    h_boundary_grad_yi.resize(dataBase_.num_boundary_surfaces * 3);
+    checkCudaErrors(cudaMemcpy(h_boundary_grad_yi.data(), d_boundary_permute, dataBase_.boundary_surface_value_vec_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_boundary_grad_yi\n");
+    checkVectorEqual(dataBase_.num_boundary_surfaces * 3, boundary_grad_yi, h_boundary_grad_yi.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+
+}
+
+void dfYEqn::comparesumYDiffError(const double *sumYDiffError, const double *boundary_sumYDiffError, bool printFlag)
+{
+    DEBUG_TRACE;
+    permute_vector_d2h(dataBase_.stream, dataBase_.num_cells, d_sumY_diff_error, d_permute);
+    permute_vector_d2h(dataBase_.stream, dataBase_.num_boundary_surfaces, d_boundary_sumY_diff_error, d_boundary_permute);
+
+    std::vector<double> h_sumYDiffError;
+    h_sumYDiffError.resize(dataBase_.num_cells * 3);
+    checkCudaErrors(cudaMemcpy(h_sumYDiffError.data(), d_permute, dataBase_.cell_value_vec_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_sumYDiffError\n");
+    checkVectorEqual(dataBase_.num_cells * 3, sumYDiffError, h_sumYDiffError.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+    std::vector<double> h_boundary_sumYDiffError;
+    h_boundary_sumYDiffError.resize(dataBase_.num_boundary_surfaces * 3);
+    checkCudaErrors(cudaMemcpy(h_boundary_sumYDiffError.data(), d_boundary_permute, dataBase_.boundary_surface_value_vec_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_boundary_sumYDiffError\n");
+    checkVectorEqual(dataBase_.num_boundary_surfaces * 3, boundary_sumYDiffError, h_boundary_sumYDiffError.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+}
+
+void dfYEqn::comparehDiffCorrFlux(const double *hDiffCorrFlux, const double *boundary_hDiffCorrFlux, bool printFlag)
+{
+    DEBUG_TRACE;
+    permute_vector_d2h(dataBase_.stream, dataBase_.num_cells, dataBase_.d_hDiff_corr_flux, d_permute);
+    permute_vector_d2h(dataBase_.stream, dataBase_.num_boundary_surfaces, dataBase_.d_boundary_hDiff_corr_flux, d_boundary_permute);
+
+    std::vector<double> h_hDiffCorrFlux;
+    h_hDiffCorrFlux.resize(dataBase_.num_cells * 3);
+    checkCudaErrors(cudaMemcpy(h_hDiffCorrFlux.data(), d_permute, dataBase_.cell_value_vec_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_hDiffCorrFlux\n");
+    checkVectorEqual(dataBase_.num_cells * 3, hDiffCorrFlux, h_hDiffCorrFlux.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+    std::vector<double> h_boundary_hDiffCorrFlux;
+    h_boundary_hDiffCorrFlux.resize(dataBase_.num_boundary_surfaces * 3);
+    checkCudaErrors(cudaMemcpy(h_boundary_hDiffCorrFlux.data(), d_boundary_permute, dataBase_.boundary_surface_value_vec_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_boundary_hDiffCorrFlux\n");
+    checkVectorEqual(dataBase_.num_boundary_surfaces * 3, boundary_hDiffCorrFlux, h_boundary_hDiffCorrFlux.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+}
+
+void dfYEqn::comparephiUc(const double *phiUc, const double *boundary_phiUc,  bool printFlag)
+{
+    DEBUG_TRACE;
+    std::vector<double> h_phiUc;
+    h_phiUc.resize(dataBase_.num_surfaces);
+    checkCudaErrors(cudaMemcpy(h_phiUc.data(), d_phiUc, dataBase_.surface_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_phiUc\n");
+    checkVectorEqual(dataBase_.num_surfaces, phiUc, h_phiUc.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+    std::vector<double> h_boundary_phiUc;
+    h_boundary_phiUc.resize(dataBase_.num_boundary_surfaces);
+    checkCudaErrors(cudaMemcpy(h_boundary_phiUc.data(), d_boundary_phiUc, dataBase_.boundary_surface_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_boundary_phiUc\n");
+    checkVectorEqual(dataBase_.num_boundary_surfaces, boundary_phiUc, h_boundary_phiUc.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+}
+
+void dfYEqn::compareResult(const double *lower, const double *upper, const double *diag, const double *source,
+        const double *internal_coeffs, const double *boundary_coeffs, bool printFlag)
+{
+    DEBUG_TRACE;
+    std::vector<double> h_lower;
+    h_lower.resize(dataBase_.num_surfaces);
+    checkCudaErrors(cudaMemcpy(h_lower.data(), d_lower, dataBase_.surface_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_lower\n");
+    checkVectorEqual(dataBase_.num_surfaces, lower, h_lower.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+
+    std::vector<double> h_upper;
+    h_upper.resize(dataBase_.num_surfaces);
+    checkCudaErrors(cudaMemcpy(h_upper.data(), d_upper, dataBase_.surface_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_upper\n");
+    checkVectorEqual(dataBase_.num_surfaces, upper, h_upper.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+
+    std::vector<double> h_diag;
+    h_diag.resize(dataBase_.num_cells);
+    checkCudaErrors(cudaMemcpy(h_diag.data(), d_diag, dataBase_.cell_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_diag\n");
+    checkVectorEqual(dataBase_.num_cells, diag, h_diag.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+
+    std::vector<double> h_source;
+    h_source.resize(dataBase_.num_cells);
+    checkCudaErrors(cudaMemcpy(h_source.data(), d_source, dataBase_.cell_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_source\n");
+    checkVectorEqual(dataBase_.num_cells, source, h_source.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+
+    std::vector<double> h_internal_coeffs;
+    h_internal_coeffs.resize(dataBase_.num_boundary_surfaces);
+    checkCudaErrors(cudaMemcpy(h_internal_coeffs.data(), d_internal_coeffs, dataBase_.boundary_surface_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_internal_coeffs\n");
+    checkVectorEqual(dataBase_.num_boundary_surfaces, internal_coeffs, h_internal_coeffs.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+
+    std::vector<double> h_boundary_coeffs;
+    h_boundary_coeffs.resize(dataBase_.num_boundary_surfaces);
+    checkCudaErrors(cudaMemcpy(h_boundary_coeffs.data(), d_boundary_coeffs, dataBase_.boundary_surface_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_boundary_coeffs\n");
+    checkVectorEqual(dataBase_.num_boundary_surfaces, boundary_coeffs, h_boundary_coeffs.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+}
+
+void dfYEqn::compareYi(const double *yi, int specie_index, bool printFlag) {
+    DEBUG_TRACE;
+    std::vector<double> h_yi;
+    h_yi.resize(dataBase_.num_cells);
+    checkCudaErrors(cudaMemcpy(h_yi.data(), dataBase_.d_y + dataBase_.num_cells * specie_index, dataBase_.cell_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_y\n");
+    checkVectorEqual(dataBase_.num_cells, yi, h_yi.data(), 1e-10, printFlag);
+    DEBUG_TRACE;
+}
+// #endif

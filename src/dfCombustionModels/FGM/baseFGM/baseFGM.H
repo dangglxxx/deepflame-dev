@@ -42,6 +42,8 @@ SourceFiles
 #include "../laminar/laminar.H"
 #include "uniformDimensionedFields.H"
 #include "CanteraMixture.H"
+// #include "fvOptions.H"
+#include "LESfilter.H"
 //#include "basicThermo.H"
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -61,7 +63,7 @@ class baseFGM
 {
     // Protected Data
  protected:
-
+    // fv::options& fvOptions; 
     //- buffer switch
     Switch buffer_;
 
@@ -82,7 +84,9 @@ class baseFGM
     
     //- T-lookup switch
     Switch flameletT_;
- 
+
+    word tablePath_;
+
     //- psi=\rho/p
     volScalarField& psi_;
 
@@ -125,16 +129,17 @@ class baseFGM
     //-covariance Z-c dissipation rate (s^{-1})
     volScalarField chi_Zc_;
 
-    //- default species needed to lookup
-    volScalarField YCO2_;
-    volScalarField YCO_;    
-    volScalarField YH2O_;
+    //- filtered SDR of mixture fraction
+    volScalarField chi_Zfltd_; 
 
-    //- self-defined species name
-    hashedWordList speciesNames_;
-    
-    //- self-defined speices mass fraction 
-    PtrList<volScalarField> Y_;
+    //- betac for LES
+    volScalarField betac_;
+
+    volScalarField He_s_;
+    volScalarField Zvar_s_; 
+    volScalarField c_s_;
+    volScalarField cvar_s_;
+    volScalarField Zcvar_s_;
 
     //- copy of omega_c_
     volScalarField cOmega_c_;
@@ -158,9 +163,12 @@ class baseFGM
     scalarField& chi_ZCells_;
     scalarField& chi_ZcCells_;
 
-    scalarField& YCO2Cells_; 
-    scalarField& YCOCells_; 
-    scalarField& YH2OCells_;    
+    //- filter size
+    scalarField deltaCells_; 
+
+    scalarField& chi_ZfltdCells_;
+
+    scalarField& betacCells_; 
 
     //- max and min Z
     scalar ZMax_;
@@ -183,6 +191,7 @@ class baseFGM
     scalar ZcvarMax_;
     scalar ZcvarMin_;   
 
+
     //- fluid density
      volScalarField& rho_;
     //- fluid density
@@ -193,6 +202,8 @@ class baseFGM
 
     //- fluid temperature
     volScalarField& T_;
+
+    PtrList<volScalarField>& Y_;
 
     //- fluid velocity
     const volVectorField& U_;     
@@ -238,6 +249,14 @@ class baseFGM
 
     multivariateSurfaceInterpolationScheme<scalar>::fieldTable fields_;
 
+    //- LES
+    //- if in LES mode
+    Switch isLES_;
+
+    //SGS
+    volScalarField magUPrime_;
+    scalarField& magUPrimeCells_; 
+
  public:
     //- Runtime type information
     TypeName("baseFGM");
@@ -266,11 +285,8 @@ class baseFGM
         //- initialize flame kernel 
         virtual void initialiseFalmeKernel();        
 
-        //- Fuel consumption rate matrix.
-        virtual tmp<fvScalarMatrix> R(volScalarField& Y) const;
-
-        //- Heat release rate [kg/m/s^3]
-        virtual tmp<volScalarField> Qdot() const;
+        //- return mag SGS
+        virtual void magUPrime();
 
         //- reaturn buffer_
         virtual bool buffer();

@@ -13,8 +13,8 @@ float readTGV(int k, string file);
 float readHighSpeed();
 float v = readHighSpeed();
 
-float H2maxT = readmaxTH2();
-float H2midT = readmidTH2();
+// float H2maxT = readmaxTH2();
+// float H2midT = readmidTH2();
 
 
 float TGV500  = readTGV(806,"2DTGV/5/data_T.xy");
@@ -31,23 +31,11 @@ float T3 = readSandia(3,"2DSandia/data_T.xy");
 float T4 = readSandia(4,"2DSandia/data_T.xy");
 float T5 = readSandia(5,"2DSandia/data_T.xy");
 float T6 = readSandia(6,"2DSandia/data_T.xy");
-
-TEST(corrtest,df0DFoam_H2){
-    EXPECT_FLOAT_EQ(H2maxT,2588.48);   // compare the maximum temperature of H2 case 
-    EXPECT_FLOAT_EQ(H2midT,1021.41); // compare the temperature of H2 case at the maximum gradient when t = 0.000245s
-    //EXPECT_FLOAT_EQ(H2maxT,2586.21);   // compare the maximum temperature of H2 case 
-    //EXPECT_FLOAT_EQ(H2midT,1020.71); // compare the temperature of H2 case at the maximum gradient when t = 0.000245s
-}
-
-
-
-//TEST(corrtest,dfLowMachFoam_TGV){
-//    EXPECT_FLOAT_EQ(TGV500,1533.48);   // compare the maximum temperature along y direction in 2D TGV after 500 time steps
-//    EXPECT_FLOAT_EQ(TGV400,1296.99);   //  ..........400 time steps
-//    EXPECT_FLOAT_EQ(TGV300,878.07);
-//    EXPECT_FLOAT_EQ(TGV200,545.818);
-//    EXPECT_FLOAT_EQ(TGV100,364.018);
-//}
+float T7 = readSandia(7,"2DSandia/data_T.xy");
+float T8 = readSandia(8,"2DSandia/data_T.xy");
+float T9 = readSandia(9,"2DSandia/data_T.xy");
+float T10 = readSandia(10,"2DSandia/data_T.xy");
+float T11 = readSandia(11,"2DSandia/data_T.xy");
 
 
 
@@ -64,13 +52,17 @@ TEST(corrtest,dfLowMachFoam_TGV){
 }
 
 TEST(corrtest,2DSandia){
-    EXPECT_FLOAT_EQ(T1,802.1133601);   
-    EXPECT_FLOAT_EQ(T2,1146.975511);  
-    EXPECT_FLOAT_EQ(T3,1569.239903);
-    EXPECT_FLOAT_EQ(T4,1376.352674);
-    EXPECT_FLOAT_EQ(T5,720.0857963);
-    EXPECT_FLOAT_EQ(T6,474.650212);
-    
+    EXPECT_FLOAT_EQ(T1,307.93593);   
+    EXPECT_FLOAT_EQ(T2,311.36824);  
+    EXPECT_FLOAT_EQ(T3,378.9158);
+    EXPECT_FLOAT_EQ(T4,661.57222);
+    EXPECT_FLOAT_EQ(T5,1109.6588);
+    EXPECT_FLOAT_EQ(T6,1521.5545);
+    EXPECT_FLOAT_EQ(T7,1865.9998);
+    EXPECT_FLOAT_EQ(T8,1963.6765);
+    EXPECT_FLOAT_EQ(T9,1783.7844);
+    EXPECT_FLOAT_EQ(T10,1474.4433);
+    EXPECT_FLOAT_EQ(T11,1069.4404);
 }
 
 float readmaxTH2(){
@@ -218,6 +210,41 @@ float readSandia(int k, string file){
             i ++ ;
             if (i == k){  
                 b = T;
+            }
+        }
+    
+    }
+    else { //Error message
+        cerr << "Can't find input file " << inFileName << endl;
+    }
+
+    return b;
+}
+
+float readflameSpeed(int k, string file);
+float fs = readflameSpeed(3,"flameSpeed/fs");
+
+
+TEST(corrtest,flameSpeed){
+    EXPECT_FLOAT_EQ(fs,6);   // compare the maximum temperature along y direction in 2D TGV after 500 time steps
+}
+
+float readflameSpeed(int k, string file){
+    
+    float fs;
+    float b;
+    int i = 0;
+    
+    string inFileName = file;
+    ifstream inFile;
+    inFile.open(inFileName.c_str());
+
+    if (inFile.is_open())  
+    {
+        while (inFile >> fs){
+            i ++ ;
+            if (i == k){  
+                b = fs;
             }
         }
     

@@ -25,6 +25,7 @@ License
 
 #include "DeePFGM.H"
 
+
 // * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
 
 template<class ReactionThermo>
@@ -38,66 +39,17 @@ Foam::combustionModels::DeePFGM<ReactionThermo>::DeePFGM
 :
     baseFGM<ReactionThermo>(modelType, thermo, turb, combustionProperties),
     tableSolver(
-                 baseFGM<ReactionThermo>::speciesNames_,
-                 baseFGM<ReactionThermo>::scaledPV_,
-                 baseFGM<ReactionThermo>::flameletT_,
-                 baseFGM<ReactionThermo>::Ycmaxall_
+                baseFGM<ReactionThermo>::tablePath_
                )
 {
     //- retrieval data from table
-    module=initialize_module();
-    func=initialize_function(module);
-    func_load=initialize_load(module);
-    // model_omegac = PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(0)));
-    // model_cp = PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(3)));
-    // model_T = PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(6)));
-    // model_YH2O = PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(8)));
-    // model_YCO = PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(9)));
-    // model_YCO2 = PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(10)));
-    // PyObject* models = PyList_New(11);
-    model_omegac=PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(0)));
-    model_cp=PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(3)));
-    model_T=PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(6)));
-    model_YH2O=PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(8)));
-    model_YCO=PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(9)));
-    model_YCO2=PyObject_CallObject(func_load, PyTuple_Pack(1, PyLong_FromLong(10)));
-    // for(int i=0;i<11;i++)
-    // {
-    //     int phinum[11]={0,0,0,3,3,3,6,6,8,9,10};
-    //     PyObject* args = PyTuple_Pack(1, PyLong_FromLong(phinum[i]));
-    //     PyObject* py_result = PyObject_CallObject(func_load, args);
-    //     PyList_SET_ITEM(models,i, py_result);
-    // }
-    // retrieval(module,func);
-}
-template<class ReactionThermo>
-void Foam::combustionModels::DeePFGM<ReactionThermo>::correct()
-{
-    //- initialize flame kernel
-    baseFGM<ReactionThermo>::initialiseFalmeKernel();
-
-    //- solve transport equation
-    baseFGM<ReactionThermo>::transport();
-
-    //update enthalpy using lookup data
-    if(!(this->solveEnthalpy_))
+    retrieval();
+    Info<< "At DeePFGM, min/max(T) = " << min(this->T_).value() << ", " << max(this->T_).value() << endl;    
+    if (tableSolver::scaledPV_ != baseFGM<ReactionThermo>::scaledPV_)
     {
-        this->He_ = this->Z_*(H_fuel-H_ox) + H_ox;
+        Info << "Warning! -- scaledPV in FGM table: " << tableSolver::scaledPV_
+            << "are not equal to that in combustionProperties: " << baseFGM<ReactionThermo>::scaledPV_ << endl;
     }
-    // PyObject* module=initialize_module();
-    // PyObject* func=initialize_function(module);
-    // PyObject* func_load=initialize_load(module);
-    // PyObject* models = PyList_New(6);
-    // for(int i=0;i<6;i++)
-    // {
-    //     int phinum[6]={0,3,6,8,9,10};
-    //     PyObject* args = PyTuple_Pack(1, PyLong_FromLong(phinum[i]));
-    //     PyObject* py_result = PyObject_CallObject(func_load, args);
-    //     PyList_SET_ITEM(models, i, py_result);
-    // }
-    //- retrieval data from table
-    retrieval(module,func,model_omegac,model_cp,model_T,model_YH2O,model_YCO,model_YCO2);
-    
 }
 
 
@@ -107,277 +59,458 @@ template<class ReactionThermo>
 Foam::combustionModels::DeePFGM<ReactionThermo>::~DeePFGM()
 {}
 
-template<class ReactionThermo>
-PyObject* Foam::combustionModels::DeePFGM<ReactionThermo>::initialize_module()
-{
-    Py_Initialize();
-    if (!Py_IsInitialized())
-    {
-        std::cout << "python init failed" << std::endl;
-    }
-    // 2、初始化python系统文件路径，保证可以访问到 .py文件
-    PyRun_SimpleString("import sys");
-    PyRun_SimpleString("import numpy");
-    PyRun_SimpleString("sys.path.append(os.getcwd()+'/FGMinference')");
-    PyObject* module = PyImport_ImportModule("inference");
-    if (module == nullptr) 
-    {
-        std::cout <<"module not found: inference" << std::endl;
-        PyErr_Print();
-    }
-    return module;
-}
+
 
 template<class ReactionThermo>
-PyObject* Foam::combustionModels::DeePFGM<ReactionThermo>::initialize_function(PyObject* module)
+void Foam::combustionModels::DeePFGM<ReactionThermo>::correct()
 {
-    PyObject* func = PyObject_GetAttrString(module, "FGM");
-    if (!func || !PyCallable_Check(func))
+    //- initialize flame kernel
+    baseFGM<ReactionThermo>::initialiseFalmeKernel();
+    //- solve transport equation
+    baseFGM<ReactionThermo>::transport();
+    if (this->isLES_)
     {
-        std::cout <<"function not found: FGM" << std::endl;
-        PyErr_Print();
+        baseFGM<ReactionThermo>::magUPrime();
     }
-    else
+    //update enthalpy using lookup data
+    if(!(this->solveEnthalpy_))
     {
-        std::cout <<"function found: FGM" << std::endl;
-    }
-    return func;
-}
-
-template<class ReactionThermo>
-PyObject* Foam::combustionModels::DeePFGM<ReactionThermo>::initialize_load(PyObject* module)
-{
-    PyObject* func = PyObject_GetAttrString(module, "load_model");
-    if (!func || !PyCallable_Check(func))
-    {
-        std::cout <<"function not found: load_model" << std::endl;
-        PyErr_Print();
-    }
-    else
-    {
-        std::cout <<"function found: load_model" << std::endl;
-    }
-    return func;
+        this->He_ = this->Z_*(this->H_fuel-this->H_ox) + this->H_ox;
+    }  
+    //- retrieval data from table
+    retrieval( );    
 }
 
 
+
 template<class ReactionThermo>
-int Foam::combustionModels::DeePFGM<ReactionThermo>::prediction
-    (
-        double z_s[], double c_s[], double gz_s[], double gc_s[],
-        double gzc_s[],  int phinum, int dimension,double* result,int size,PyObject* module,PyObject* func,PyObject* model
-    )
+void Foam::combustionModels::DeePFGM<ReactionThermo>::getGPUFGMProblemCells(Foam::DynamicList<GpuFGMProblem>& GPUFGMproblemList)
+{
+    forAll(this->rho_, celli)  
     {
-        PyObject* py_phinum = PyLong_FromLong(phinum);
-        PyObject* py_dimension = PyLong_FromLong(dimension);
-        // 将C++的数组参数转换为Python列表对象
-        PyObject* py_z = PyList_New(size);
-        PyObject* py_c = PyList_New(size);
-        PyObject* py_gz = PyList_New(size);
-        PyObject* py_gc = PyList_New(size);
-        PyObject* py_gzc = PyList_New(size);
-        for (int i = 0; i < size; i++) {
-            PyList_SET_ITEM(py_z, i, PyFloat_FromDouble(z_s[i]));
-            PyList_SET_ITEM(py_c, i, PyFloat_FromDouble(c_s[i]));
-            PyList_SET_ITEM(py_gz, i, PyFloat_FromDouble(gz_s[i]));
-            PyList_SET_ITEM(py_gc, i, PyFloat_FromDouble(gc_s[i]));
-            PyList_SET_ITEM(py_gzc, i, PyFloat_FromDouble(gzc_s[i]));
-        }
-    
-        PyObject* args = PyTuple_Pack(8, py_z, py_c,py_gz,py_gc,py_gzc,py_phinum,py_dimension,model);
-        PyObject* py_result = PyObject_CallObject(func, args);
-        
-        // 5、调用函数
-        // PyObject_CallObject(func, nullptr);
-        if (PyList_Check(py_result)) {
-            for (int i = 0; i < size; i++) {
-                PyObject* item = PyList_GetItem(py_result, i);
-                double value = PyFloat_AsDouble(item);
-                result[i] = value;
-                // Info<<result[i]<<endl;
-            }
-        }
-        else
+        GpuFGMProblem problem;
+        problem.cellid = celli;
+        problem.h = this->He_s_[celli];
+        problem.z = this->ZCells_[celli];
+        problem.c = this->c_s_[celli];
+        problem.gz = this->Zvar_s_[celli];
+        problem.gc = this->cvar_s_[celli];
+        problem.gcz = this->Zcvar_s_[celli];
+        GPUFGMproblemList.append(problem);
+    }
+    return;
+}
+
+
+
+template<class ReactionThermo>
+void Foam::combustionModels::DeePFGM<ReactionThermo>::getDNNinputs(const Foam::DynamicBuffer<GpuFGMProblem>& problemBuffer,
+    std::vector<label>& outputLength,
+    std::vector<std::vector<double>>& DNNinputs,
+    std::vector<Foam::DynamicBuffer<label>>& cellIDBuffer,
+    std::vector<std::vector<label>>& problemCounter
+        )
+{
+    std::vector<label> problemCounter0;     // evaluate the number of the problems of each subslave for DNN0
+    std::vector<double> inputsDNN;         // the vector constructed for inference via DNN0
+    DynamicList<label> cellIDList;         // store the cellID of each problem in each subslave for DNN0
+    DynamicBuffer<label> cellIDListBuffer; // store the cellIDList0 of each subslave
+    for (label i = 0; i < this->cores_; i++) // for all local core TODO: i may cause misleading
+    {
+        label counter = 0;
+        for (label cellI = 0; cellI < problemBuffer[i].size(); cellI++) // loop cores*problemBuffer[i].size() times
         {
-            Info<<"It is not a list"<<endl;
+            inputsDNN.push_back(problemBuffer[i][cellI].h);
+            inputsDNN.push_back(problemBuffer[i][cellI].z);
+            inputsDNN.push_back(problemBuffer[i][cellI].c);
+            inputsDNN.push_back(problemBuffer[i][cellI].gz);
+            inputsDNN.push_back(problemBuffer[i][cellI].gc);
+            inputsDNN.push_back(problemBuffer[i][cellI].gcz);
+            counter++;
+            cellIDList.append(problemBuffer[i][cellI].cellid);
         }
-        // 6、结束python接口初始化
-        Py_DECREF(py_z);
-        Py_DECREF(py_c);
-        Py_DECREF(py_gz);
-        Py_DECREF(py_gc);
-        Py_DECREF(py_gzc);
-        Py_DECREF(args);
-        Py_DECREF(py_result);
-        // Py_DECREF(func);
-        // Py_DECREF(module);
-        // Py_Finalize();
-        return 0;
-                
+        problemCounter0.push_back(counter); //count number of inputs mapped to each dnn
+        cellIDListBuffer.append(cellIDList);
+        cellIDList.clear();
     }
+    label length = std::accumulate(problemCounter0.begin(), problemCounter0.end(), 0);
+    outputLength = {length};
+    DNNinputs = {inputsDNN};
+    cellIDBuffer = {cellIDListBuffer};
+    problemCounter = {problemCounter0};
+}
+
+
+
 template<class ReactionThermo>
-void Foam::combustionModels::DeePFGM<ReactionThermo>::retrieval(PyObject* module,PyObject* func,PyObject* model_omegac,PyObject* model_cp,PyObject* model_T,PyObject* model_YH2O,PyObject* model_YCO,PyObject* model_YCO2)
+void Foam::combustionModels::DeePFGM<ReactionThermo>::updateSolutionBuffer(Foam::DynamicBuffer<GpuFGMSolution>& solutionBuffer,
+            const std::vector<std::vector<double>>& results,
+            const std::vector<Foam::DynamicBuffer<Foam::label>>& cellIDBuffer,
+            std::vector<std::vector<Foam::label>>& problemCounter
+        )
+{
+    GpuFGMSolution solution;
+    DynamicList<GpuFGMSolution> solutionList; //TODO: rename
+    label outputCounter0 = 0;
+    for (label i = 0; i < this->cores_; i++) //TODO: i may cause misleading
+    {
+        for (int cellI = 0; cellI < problemCounter[0][i]; cellI++)
+        {
+            solution.omegac = results[0][outputCounter0 * this->phinum_];
+            solution.comegac = results[0][outputCounter0 * this->phinum_+1];
+            solution.zomegac = results[0][outputCounter0 * this->phinum_+2];
+            solution.cellid = cellIDBuffer[0][i][cellI]; //cellid are sequential so that's fine
+            solutionList.append(solution);
+            outputCounter0++;
+        }    
+    solutionBuffer.append(solutionList);
+    solutionList.clear();
+    }
+    return;
+}
+
+
+
+template<class ReactionThermo>
+void Foam::combustionModels::DeePFGM<ReactionThermo>::retrieval( )
 {
 
     tmp<volScalarField> tk(this->turbulence().k());
     volScalarField& k = const_cast<volScalarField&>(tk());
     scalarField& kCells =k.primitiveFieldRef();
-
     tmp<volScalarField> tepsilon(this->turbulence().epsilon());
-     volScalarField& epsilon = const_cast<volScalarField&>(tepsilon());
+    volScalarField& epsilon = const_cast<volScalarField&>(tepsilon());
     const scalarField& epsilonCells =epsilon.primitiveFieldRef();
-
     tmp<volScalarField> tmu = this->turbulence().mu();  
     volScalarField& mu = const_cast<volScalarField&>(tmu());
     scalarField& muCells = mu.primitiveFieldRef();     
-    int dim=2;
-    // Info<< "pause1" << endl;
-    //- calculate reacting flow solution
-    const scalar Zl{z_Tb5[0]};  
-    const scalar Zr{z_Tb5[NZL-1]};
- 
-
+    tmp<volScalarField> tmut = this->turbulence().mut();  
+    volScalarField& mut = const_cast<volScalarField&>(tmut());
+    scalarField& mutCells = mut.primitiveFieldRef();   
+    int ih = 0;
+    int Ncells = this->chi_cCells_.size();
+    int cores=this->cores_;
+    int phinum=this->phinum_;
+    double Zl_s[Ncells]={};
+    double Zr_s[Ncells]={};
     dimensionedScalar TMin("TMin",dimensionSet(0,0,0,1,0,0,0),200.0);    
-    dimensionedScalar TMax("TMax",dimensionSet(0,0,0,1,0,0,0),3000.0);  
-
+    dimensionedScalar TMax("TMax",dimensionSet(0,0,0,1,0,0,0),5000.0);  
     forAll(this->rho_, celli)  
     {
+        if(this->isLES_)
+        {
+             this->chi_ZCells_[celli] = this->sdrLRXmodel(2.0,mutCells[celli]
+                                   /this->rho_[celli],this->deltaCells_[celli],this->ZvarCells_[celli]); 
+             this->chi_ZcCells_[celli] = this->sdrLRXmodel(2.0,mutCells[celli]
+                                  /this->rho_[celli],this->deltaCells_[celli],this->ZcvarCells_[celli]); 
+        }     
+        else
+        {
+            this->chi_ZCells_[celli] = 1.0*epsilonCells[celli]/kCells[celli] *this->ZvarCells_[celli]; 
 
-        this->chi_ZCells_[celli] = 1.0*epsilonCells[celli]/kCells[celli] *this->ZvarCells_[celli]; 
-
-        this->chi_ZcCells_[celli] = 1.0*epsilonCells[celli]/kCells[celli] *this->ZcvarCells_[celli]; 
-
-        if(this->ZCells_[celli] >= Zl && this->ZCells_[celli] <= Zr     
+            this->chi_ZcCells_[celli] = 1.0*epsilonCells[celli]/kCells[celli] *this->ZcvarCells_[celli];             
+        }
+        double hLoss = ( this->ZCells_[celli]*(this->Hfu-this->Hox) + this->Hox ) - this->HCells_[celli];
+        hLoss = max(hLoss, this->h_Tb3[0]);
+        hLoss = min(hLoss, this->h_Tb3[this->NH - 1]);
+        ih = this->locate_lower(this->NH,this->h_Tb3,hLoss);
+        Zl_s[celli] = this->z_Tb5[ih*this->NZL];  
+        Zr_s[celli] = this->z_Tb5[(ih+1)*this->NZL-1];
+        if(this->ZCells_[celli] >= Zl_s[celli] && this->ZCells_[celli] <= Zr_s[celli]    
         && this->combustion_ && this->cCells_[celli] > this->small) 
         {
-
-            double kc_s = this->lookup1d(NZL,z_Tb5,this->ZCells_[celli],kctau_Tb5);      
-            double tau = this->lookup1d(NZL,z_Tb5,this->ZCells_[celli],tau_Tb5);    
-            double sl = this->lookup1d(NZL,z_Tb5,this->ZCells_[celli],sl_Tb5);     
-            double dl = this->lookup1d(NZL,z_Tb5,this->ZCells_[celli],th_Tb5);   
-
-            this->chi_cCells_[celli] =
-                this->RANSsdrFLRmodel(this->cvarCells_[celli],epsilonCells[celli],
-                    kCells[celli],muCells[celli]/this->rho_[celli],
-                    sl,dl,tau,kc_s,this->rho_[celli]);  
+            double kc_s = this->lookup2d(this->NH,this->h_Tb3,hLoss,this->NZL,this->z_Tb5,this->ZCells_[celli],this->kctau_Tb5);      
+            double tau = this->lookup2d(this->NH,this->h_Tb3,hLoss,this->NZL,this->z_Tb5,this->ZCells_[celli],this->tau_Tb5);    
+            double sl = this->lookup2d(this->NH,this->h_Tb3,hLoss,this->NZL,this->z_Tb5,this->ZCells_[celli],this->sl_Tb5);     
+            double dl = this->lookup2d(this->NH,this->h_Tb3,hLoss,this->NZL,this->z_Tb5,this->ZCells_[celli],this->th_Tb5);   
+            if(this->isLES_)
+            {
+                this->chi_cCells_[celli] = this->sdrFLRmodel(this->cvarCells_[celli],this->magUPrimeCells_[celli],
+                                            this->deltaCells_[celli],sl,dl,tau,kc_s,this->betacCells_[celli]);
+            } 
+            else
+            {
+                this->chi_cCells_[celli] =
+                    this->RANSsdrFLRmodel(this->cvarCells_[celli],epsilonCells[celli],
+                        kCells[celli],muCells[celli]/this->rho_[celli],
+                        sl,dl,tau,kc_s,this->rho_[celli]);  
+            }
 
         }
         else
         {
-            this->chi_cCells_[celli] = 1.0*epsilonCells[celli]/kCells[celli]*this->cvarCells_[celli]; 
+            if(this->isLES_)
+            {
+                this->chi_cCells_[celli] = this->sdrLRXmodel(2.0,mutCells[celli]
+                           /this->rho_[celli],this->deltaCells_[celli],this->cvarCells_[celli]);     
+            }
+            else
+            {
+                this->chi_cCells_[celli] = 1.0*epsilonCells[celli]/kCells[celli]*this->cvarCells_[celli]; 
+            }
+        }
+        if(this->chi_ZCells_[celli] > 1.0e-16 and this->chi_cCells_[celli]> 1.0e-16)
+        {
+            if (this->ZcvarCells_[celli] > 1.0e-16)
+            {
+                this->chi_ZcCells_[celli] = max(this->chi_ZcCells_[celli], std::sqrt(this->chi_ZCells_[celli] * this->chi_cCells_[celli])); 
+            }
+            else if (this->ZcvarCells_[celli] < -1.0e-16)
+            {
+                this->chi_ZcCells_[celli] = min(this->chi_ZcCells_[celli], -std::sqrt(this->chi_ZCells_[celli] * this->chi_cCells_[celli]));
+            }
+        }     
+        // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =        
+        double gz{this->cal_gvar(this->ZCells_[celli],this->ZvarCells_[celli])};   
+        double gcz{this->cal_gcor(this->ZCells_[celli],this->cCells_[celli],this->ZvarCells_[celli],this->cvarCells_[celli],this->ZcvarCells_[celli])},
+                Ycmax{-1.0},cNorm{},gc{};    
+        if(tableSolver::scaledPV_)    
+        {
+            cNorm = this->cCells_[celli];  
+        }
+        else
+        {
+            Ycmax = this->lookup6d(this->NH,this->h_Tb3,hLoss,
+                                this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                this->NC,this->c_Tb3,0.0,
+                                this->NGZ,this->gz_Tb3,gz,
+                                this->NGC,this->gc_Tb3,0.0,
+                                this->NZC,this->gzc_Tb3,0.0,
+                                this->tableValues_[this->NS-1]);    
+            Ycmax = max(this->smaller,Ycmax);    
+            cNorm = this->cCells_[celli]/Ycmax; 
+        }
+        gc = this->cal_gvar(this->cCells_[celli],this->cvarCells_[celli],Ycmax);          
+        this->He_s_[celli] = hLoss;
+        this->c_s_[celli] = cNorm;
+        this->Zvar_s_[celli] = gz;
+        this->cvar_s_[celli] = gc;
+        if(gcz<-1)
+        {
+            this->Zcvar_s_[celli] = -1;
+        }
+        else if(gcz>1)
+        {
+            this->Zcvar_s_[celli] = 1;
+        }
+        else
+        {
+            this->Zcvar_s_[celli] = gcz;
         }
     }
-    // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
-    int Ncells = this->chi_cCells_.size();
-    /*new double[Ncells]{}*/
-    double gz_s[Ncells]={};
-    double gcz_s[Ncells]={};
-    double Ycmax_s[Ncells]={};
-    double gc_s[Ncells]={};
-    double z_s[Ncells]={};
-    double Wt_s[Ncells]={};
-    double mu_s[Ncells]={};
-    double c_s[Ncells]={};
-
-
-    forAll(this->rho_, celli)
+    std::chrono::steady_clock::time_point start10 = std::chrono::steady_clock::now();
+    DynamicList<GpuFGMSolution> finalList;
+    if (Pstream::parRun()) // parallel computing
     {
-        z_s[celli]=this->ZCells_[celli];
-        gz_s[celli]=cal_gvar(this->ZCells_[celli],this->ZvarCells_[celli]);
-        gcz_s[celli]=cal_gcor(this->ZCells_[celli],this->cCells_[celli],this->ZvarCells_[celli],this->cvarCells_[celli],this->ZcvarCells_[celli]);
-        gc_s[celli]=cal_gvar(this->cCells_[celli],this->cvarCells_[celli],Ycmax_s[0]);
-    }
-    if(scaledPV_)
-    {
-        forAll(this->rho_, celli)
+        DynamicList<GpuFGMProblem> GPUFGMproblemList;
+        getGPUFGMProblemCells(GPUFGMproblemList);
+        label flag_mpi_init;
+        MPI_Initialized(&flag_mpi_init);
+        if(flag_mpi_init) MPI_Barrier(PstreamGlobals::MPI_COMM_FOAM);
+        PstreamBuffers pBufs(Pstream::commsTypes::nonBlocking);
+        if (Pstream::myProcNo() % cores) //for slave
         {
-            c_s[celli]=this->cCells_[celli];
+            UOPstream send((Pstream::myProcNo()/cores)*cores, pBufs);// sending problem to master
+            send << GPUFGMproblemList;
         }
-    } 
-    prediction(z_s,c_s,gz_s,gc_s,gcz_s,4,dim,Wt_s,Ncells,module,func,model_cp);
-    prediction(z_s,c_s,gz_s,gc_s,gcz_s,7,dim,mu_s,Ncells,module,func,model_T);
-    // Info<< "pause4" << endl;
-    forAll(this->rho_, celli)
-    {
-        this->WtCells_[celli]=Wt_s[celli];
-        muCells[celli]=mu_s[celli];
-    }   
-
-   // -------------------- Yis begin ------------------------------
-    if(NY > 0)
-    {
-        double YH2O_s[Ncells]={};
-        double YCO_s[Ncells]={};
-        double YCO2_s[Ncells]={};
-        prediction(z_s,c_s,gz_s,gc_s,gcz_s,8,dim,YH2O_s,Ncells,module,func,model_YH2O);
-        prediction(z_s,c_s,gz_s,gc_s,gcz_s,9,dim,YCO_s,Ncells,module,func,model_YCO);
-        prediction(z_s,c_s,gz_s,gc_s,gcz_s,10,dim,YCO2_s,Ncells,module,func,model_YCO2);
-        forAll(this->rho_, celli)
+        pBufs.finishedSends();
+        DynamicBuffer<GpuFGMProblem> problemBuffer(this->cores_);
+        DynamicBuffer<GpuFGMSolution> solutionBuffer;
+        if (!(Pstream::myProcNo() % cores))
         {
-            this->YH2OCells_[celli]=YH2O_s[celli];
-            this->YCOCells_[celli]=YCO_s[celli];
-            this->YCO2Cells_[celli]=YCO2_s[celli];
+            label problemSize = 0; // problemSize is defined to debug
+            //each submaster init a local problemBuffer TODO:rename it
+            /*==============================gather problems==============================*/
+            problemBuffer[0] = GPUFGMproblemList; //problemList of submaster get index 0
+            problemSize += problemBuffer[0].size();
+            for (label i = 1; i < this->cores_; i++)
+            {
+                UIPstream recv(i + Pstream::myProcNo(), pBufs);
+                recv >> problemBuffer[i];  //recv previous send problem and append to problemList
+                problemSize += problemBuffer[i].size();
+            }    
+            std::vector<label> outputLength;
+            std::vector<std::vector<double>> DNNinputs;     // vectors for the inference of DNN
+            std::vector<DynamicBuffer<label>> cellIDBuffer; // Buffer contains the cell numbers
+            std::vector<std::vector<label>> problemCounter; // evaluate the number of the problems of each subslave
+            getDNNinputs(problemBuffer, outputLength, DNNinputs, cellIDBuffer, problemCounter);
+            pybind11::array_t<double> vec0 = pybind11::array_t<double>({DNNinputs[0].size()}, {8}, &DNNinputs[0][0]); // cast vector to np.array
+            my_module = pybind11::module::import("inference");
+            pybind11::object result = my_module.attr("predict_new")(vec0);
+            const double* star = result.cast<pybind11::array_t<double>>().data();
+            std::vector<double> outputsVec0(star, star+outputLength[0] * phinum);
+            std::vector<std::vector<double>> results = {outputsVec0};
+            updateSolutionBuffer(solutionBuffer, results, cellIDBuffer, problemCounter);
         }
-    }
-
-    // -------------------- Yis end ------------------------------
-
-    double omegac_s[Ncells]={};
-    double comegac_s[Ncells]={};
-    double zomegac_s[Ncells]={};
-    prediction(z_s,c_s,gz_s,gc_s,gcz_s,0,dim,omegac_s,Ncells,module,func,model_omegac);
-    prediction(z_s,c_s,gz_s,gc_s,gcz_s,1,dim,comegac_s,Ncells,module,func,model_omegac);
-    prediction(z_s,c_s,gz_s,gc_s,gcz_s,2,dim,zomegac_s,Ncells,module,func,model_omegac);
-    forAll(this->rho_, celli)
-    {
-        this->omega_cCells_[celli]=(omegac_s[celli]+ (
-                  scaledPV_
-                  ? this->chi_ZCells_[celli]*this->cCells_[celli]
-                    *lookup2d(NZ,z_Tb3,this->ZCells_[celli],
-                                   NGZ,gz_Tb3,gz_s[celli],d2Yeq_Tb2)
-                  : 0.0
-              ))*this->rho_[celli];
-        this->cOmega_cCells_[celli]=comegac_s[celli]*this->rho_[celli];
-        this->ZOmega_cCells_[celli]=zomegac_s[celli]*this->rho_[celli];
-    }
-    forAll(this->rho_, celli)
-    {   
-        if(this->ZCells_[celli] <= Zl || this->ZCells_[celli] >= Zr
-       || !this->combustion_ || this->cCells_[celli] <= this->small) 
+        PstreamBuffers pBufs2(Pstream::commsTypes::nonBlocking);
+        if (!(Pstream::myProcNo() % cores)) // submaster
         {
-        this->omega_cCells_[celli] = 0.0;
-        this->cOmega_cCells_[celli] = 0.0;  
-        this->ZOmega_cCells_[celli] = 0.0; 
+            finalList = solutionBuffer[0];
+            for (label i = 1; i < cores; i++)
+            {
+                UOPstream send(i + Pstream::myProcNo(), pBufs2);
+                send << solutionBuffer[i];
+            }
         }
-    }
-
-    if(flameletT_)   
-    {
-        double T_s[Ncells]={};
-        prediction(z_s,c_s,gz_s,gc_s,gcz_s,6,dim,T_s,Ncells,module,func,model_T);
-        forAll(this->rho_, celli)
+        pBufs2.finishedSends();
+        if (Pstream::myProcNo() % cores) // slavers
         {
-            this->TCells_[celli]=T_s[celli];
+            UIPstream recv((Pstream::myProcNo()/cores)*cores, pBufs2);
+            recv >> finalList;
         }
     }
     else
     {
-        double Cp_s[Ncells]={};
-        double Hf_s[Ncells]={};
-        prediction(z_s,c_s,gz_s,gc_s,gcz_s,3,dim,Cp_s,Ncells,module,func,model_cp);
-        prediction(z_s,c_s,gz_s,gc_s,gcz_s,5,dim,Hf_s,Ncells,module,func,model_cp);
-        forAll(this->rho_, celli)
-        { 
-            this->CpCells_[celli]=Cp_s[celli];
-            this->HfCells_[celli]=Hf_s[celli];
+        DynamicList<GpuFGMProblem> GPUFGMproblemList;
+        getGPUFGMProblemCells(GPUFGMproblemList);
+        this->cores_=1;
+        DynamicBuffer<GpuFGMProblem> problemBuffer(this->cores_);
+        DynamicBuffer<GpuFGMSolution> solutionBuffer;
+        std::vector<label> outputLength;
+        std::vector<std::vector<double>> DNNinputs;     // vectors for the inference of DNN
+        std::vector<DynamicBuffer<label>> cellIDBuffer; // Buffer contains the cell numbers
+        std::vector<std::vector<label>> problemCounter; // evaluate the number of the problems of each subslave
+        problemBuffer[0]=GPUFGMproblemList;
+        getDNNinputs(problemBuffer, outputLength, DNNinputs, cellIDBuffer, problemCounter);
+        pybind11::array_t<double> vec0 = pybind11::array_t<double>({DNNinputs[0].size()}, {8}, &DNNinputs[0][0]); // cast vector to np.array
+        my_module = pybind11::module::import("inference");
+        pybind11::object result = my_module.attr("predict_new")(vec0);
+        const double* star = result.cast<pybind11::array_t<double>>().data();
+        std::vector<double> outputsVec0(star, star+outputLength[0] * phinum);
+        std::vector<std::vector<double>> results = {outputsVec0};
+        updateSolutionBuffer(solutionBuffer, results, cellIDBuffer, problemCounter);
+        Info<<"Update solutions"<<endl;
+        finalList = solutionBuffer[0];
+    }
+    for (int cellI = 0; cellI < finalList.size(); cellI++)
+    {
+        int celli=finalList[cellI].cellid;
+        if(this->ZCells_[celli] >= Zl_s[celli] && this->ZCells_[celli] <= Zr_s[celli]
+        && this->combustion_ && this->cCells_[celli] > this->small)  
+        {
+            // if(this->ZCells_[celli]<=this->z_Tb3[1]||this->ZCells_[celli]<=this->z_Tb3[this->NZ-1]||this->ZCells_[celli]<=this->z_Tb3[1]||this->ZCells_[celli]<=this->z_Tb3[1])
+            if (this->isLES_)
+            {
+                this->omega_cCells_[celli] =
+                    finalList[celli].omegac
+                    + (
+                        tableSolver::scaledPV_
+                        ? (this->chi_ZCells_[celli] + this->chi_ZfltdCells_[celli])*this->cCells_[celli]
+                            *this->lookup3d(this->NH,this->h_Tb3,this->He_s_[celli],this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],this->d2Yeq_Tb2)
+                            + 2*this->chi_ZcCells_[celli]*this->lookup3d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                                    this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                                    this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],this->d1Yeq_Tb2)
+                        : 0.0
+                    );
+                  
+            }
+            else
+            {
+                this->omega_cCells_[celli] =
+                    finalList[celli].omegac
+                    + (
+                        tableSolver::scaledPV_
+                        ? (  this->chi_ZCells_[celli]*this->cCells_[celli]
+                            *this->lookup3d(this->NH,this->h_Tb3,this->He_s_[celli],this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],this->d2Yeq_Tb2)
+                            + 2*this->chi_ZcCells_[celli]*this->lookup3d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                                        this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                                        this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],this->d1Yeq_Tb2)  )
+                        : 0.0
+                    );
+                  
+            }
+
+            this->cOmega_cCells_[celli] = finalList[celli].comegac;     
+            this->ZOmega_cCells_[celli] = finalList[celli].zomegac;   
+
+        }
+        else   
+        {
+            this->omega_cCells_[celli] = 0.0;
+            this->cOmega_cCells_[celli] = 0.0;  
+            this->ZOmega_cCells_[celli] = 0.0; 
+        }
+        this->omega_cCells_[celli] = this->omega_cCells_[celli]*this->rho_[celli];   
+        this->cOmega_cCells_[celli] = this->cOmega_cCells_[celli]*this->rho_[celli];
+        this->ZOmega_cCells_[celli] = this->ZOmega_cCells_[celli]*this->rho_[celli];
+    }
+    forAll(this->rho_, celli)  
+    {       
+        this->WtCells_[celli] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                    this->NZ,this->z_Tb3,this->ZCells_[celli],    
+                                    this->NC,this->c_Tb3,this->c_s_[celli],
+                                    this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],
+                                    this->NGC,this->gc_Tb3,this->cvar_s_[celli],
+                                    this->NZC,this->gzc_Tb3,this->Zcvar_s_[celli],
+                                    this->tableValues_[4]);      
+        muCells[celli] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                    this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                    this->NC,this->c_Tb3,this->c_s_[celli],
+                                    this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],
+                                    this->NGC,this->gc_Tb3,this->cvar_s_[celli],
+                                    this->NZC,this->gzc_Tb3,this->Zcvar_s_[celli],
+                                    this->tableValues_[7])*this->rho_[celli];   
+        // // -------------------- Yis begin ------------------------------
+        for (int yi=0; yi<this->NY; yi++)
+        {
+            word specieName2Update = this->speciesNames_table_[yi];
+            const label& specieLabel2Update = this->chemistryPtr_->species()[specieName2Update];
+            this->Y_[specieLabel2Update].primitiveFieldRef()[celli] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                        this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                        this->NC,this->c_Tb3,this->c_s_[celli],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_[celli],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_[celli],
+                                        this->tableValues_[this->NS+yi]);  
+        }
+        // -------------------- Yis end ------------------------------
+        if (this->combustion_)
+        {
+            for (int yi=0; yi<this->NYomega; yi++)
+            {
+                this->omega_Yis_[yi][celli] = this->rho_[celli] * 
+                            this->lookup6d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                            this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                            this->NC,this->c_Tb3,this->c_s_[celli],
+                                            this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],
+                                            this->NGC,this->gc_Tb3,this->cvar_s_[celli],
+                                            this->NZC,this->gzc_Tb3,this->Zcvar_s_[celli],
+                                            this->tableValues_[NS-1-this->NYomega+yi]);
+            }
+        }
+        if(baseFGM<ReactionThermo>::flameletT_)   
+        {
+            this->TCells_[celli] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                        this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                        this->NC,this->c_Tb3,this->c_s_[celli],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_[celli],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_[celli],
+                                        this->tableValues_[6]);   
+        }
+        else
+        {
+            this->CpCells_[celli] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                        this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                        this->NC,this->c_Tb3,this->c_s_[celli],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_[celli],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_[celli],
+                                        this->tableValues_[3]);   
+            this->HfCells_[celli] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_[celli],
+                                        this->NZ,this->z_Tb3,this->ZCells_[celli],
+                                        this->NC,this->c_Tb3,this->c_s_[celli],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_[celli],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_[celli],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_[celli],
+                                        this->tableValues_[5]);   
             this->TCells_[celli] = (this->HCells_[celli]-this->HfCells_[celli])/this->CpCells_[celli]
-                        + this->T0;
+                            + this->T0;   
         }
     }
-
-
     //-----------update boundary---------------------------------
-
     forAll(this->rho_.boundaryFieldRef(), patchi)   
     {
         fvPatchScalarField& pZ = this->Z_.boundaryFieldRef()[patchi];     
@@ -397,131 +530,292 @@ void Foam::combustionModels::DeePFGM<ReactionThermo>::retrieval(PyObject* module
         fvPatchScalarField& pchi_Z = this->chi_Z_.boundaryFieldRef()[patchi];  
         fvPatchScalarField& pchi_c = this->chi_c_.boundaryFieldRef()[patchi];   
         fvPatchScalarField& pchi_Zc = this->chi_Zc_.boundaryFieldRef()[patchi];   
-
         tmp<scalarField> tmuw = this->turbulence().mu(patchi);
         scalarField& pmu = const_cast<scalarField&>(tmuw());    
-
+        const tmp<scalarField> tmutw = this->turbulence().mut(patchi);      
+        const scalarField& pmut = tmutw();  
+        fvPatchScalarField& pmagUPrime = this->magUPrime_.boundaryFieldRef()[patchi];    
+        fvPatchScalarField& pchi_Zfltd = this->chi_Zfltd_.boundaryFieldRef()[patchi];    
         fvPatchScalarField& pk = k.boundaryFieldRef()[patchi];
         fvPatchScalarField& pepsilon = epsilon.boundaryFieldRef()[patchi];
-
-
+        int Nfaces = pZ.size();
+        double Zl_t[Nfaces]={};
+        double Zr_t[Nfaces]={};
         forAll(prho_, facei)   
         {
-
-            pchi_Z[facei] = 1.0*pepsilon[facei]/pk[facei] *pZvar[facei]; 
-
-            pchi_Zc[facei]= 1.0*pepsilon[facei]/pk[facei] *pZcvar[facei]; 
-
-            if(pZ[facei] >= Zl && pZ[facei] <= Zr
+            label cellID = this->mesh().boundary()[patchi].faceCells()[facei];   //与facei紧邻网格的编号
+            double hLoss = ( pZ[facei]*(this->Hfu-this->Hox) + this->Hox ) - pH[facei];
+            hLoss = max(hLoss, this->h_Tb3[0]);
+            hLoss = min(hLoss, this->h_Tb3[this->NH - 1]);
+            ih = this->locate_lower(this->NH,this->h_Tb3,hLoss);
+            Zl_t[facei] = this->z_Tb5[ih*this->NZL];  
+            Zr_t[facei] = this->z_Tb5[(ih+1)*this->NZL-1];
+            if(this->isLES_)
+            {
+                pchi_Z[facei] = sdrLRXmodel(2.0,pmut[facei]
+                    /this->rho_[facei],this->deltaCells_[cellID],pZvar[facei]); //求混合物分数z的标量耗散率
+                pchi_Zc[facei]= sdrLRXmodel(2.0,pmut[facei]
+                    /this->rho_[facei],this->deltaCells_[cellID],pZcvar[facei]); //求Z、c协方差的标量耗散率
+            }
+            else
+            {
+                pchi_Z[facei] = 1.0*pepsilon[facei]/pk[facei] *pZvar[facei]; 
+                pchi_Zc[facei]= 1.0*pepsilon[facei]/pk[facei] *pZcvar[facei]; 
+            }
+            if(pZ[facei] >= Zl_t[facei] && pZ[facei] <= Zr_t[facei]
             && this->combustion_ && pc[facei] > this->small) 
             {
-
-                double kc_s = lookup1d(NZL,z_Tb5,pZ[facei],kctau_Tb5);     
-                double tau = lookup1d(NZL,z_Tb5,pZ[facei],tau_Tb5);    
-                double sl = lookup1d(NZL,z_Tb5,pZ[facei],sl_Tb5);      
-                double dl = lookup1d(NZL,z_Tb5,pZ[facei],th_Tb5);      
-
-                pchi_c[facei] =
-                    RANSsdrFLRmodel(pcvar[facei],pepsilon[facei],
-                        pk[facei],pmu[facei]/prho_[facei],
-                        sl,dl,tau,kc_s,prho_[facei]);
+                double kc_s = this->lookup2d(this->NH,this->h_Tb3,hLoss,this->NZL,this->z_Tb5,pZ[facei],this->kctau_Tb5);     
+                double tau = this->lookup2d(this->NH,this->h_Tb3,hLoss,this->NZL,this->z_Tb5,pZ[facei],this->tau_Tb5);    
+                double sl = this->lookup2d(this->NH,this->h_Tb3,hLoss,this->NZL,this->z_Tb5,pZ[facei],this->sl_Tb5);      
+                double dl = this->lookup2d(this->NH,this->h_Tb3,hLoss,this->NZL,this->z_Tb5,pZ[facei],this->th_Tb5);      
+                if(this->isLES_)
+                {
+                    pchi_c[facei] =   sdrFLRmodel(pcvar[facei],pmagUPrime[facei],
+                                      this->deltaCells_[cellID],sl,dl,tau,kc_s,this->betacCells_[cellID]);   
+                }
+                else
+                {
+                    pchi_c[facei] =
+                        this->RANSsdrFLRmodel(pcvar[facei],pepsilon[facei],
+                            pk[facei],pmu[facei]/prho_[facei],
+                            sl,dl,tau,kc_s,prho_[facei]);
+                }
             }
             else
             {      
-                pchi_c[facei] = 1.0*pepsilon[facei]/pk[facei] *pcvar[facei]; 
-
-            }
-        }
-         // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
-
-        int Npatch=pZ.size();
-        double z_t[Npatch]={};
-        double gz_t[Npatch]={};
-        double gcz_t[Npatch]={};
-        double c_t[Npatch]={};
-        double gc_t[Npatch]={};
-        double Wt_t[Npatch]={};
-        double mu_t[Npatch]={};
-        forAll(prho_, facei)
-        {
-            z_t[facei]=pZ[facei];
-            gz_t[facei]=cal_gvar(pZ[facei],pZvar[facei]);
-            gcz_t[facei]=cal_gcor(pZ[facei],pc[facei],pZvar[facei],pcvar[facei],pZcvar[facei]);
-            gc_t[facei]=cal_gvar(pc[facei],pcvar[facei],Ycmax_s[0]);
-
-        }
-        if(scaledPV_)
-        {
-            forAll(prho_, facei)
-            {
-                c_t[facei]=pc[facei];
-            }
-        }
-        prediction(z_t,c_t,gz_t,gc_t,gcz_t,4,dim,Wt_t,Npatch,module,func,model_cp);
-        prediction(z_t,c_t,gz_t,gc_t,gcz_t,7,dim,mu_t,Npatch,module,func,model_T);
-        forAll(prho_, facei)
-        {
-            pWt[facei]=Wt_t[facei];
-            pmu[facei]=mu_t[facei];
-        }
-        double omegac_t[Npatch]={};
-        double comegac_t[Npatch]={};
-        double zomegac_t[Npatch]={};
-        prediction(z_t,c_t,gz_t,gc_t,gcz_t,0,dim,omegac_t,Npatch,module,func,model_omegac);
-        prediction(z_t,c_t,gz_t,gc_t,gcz_t,1,dim,comegac_t,Npatch,module,func,model_omegac);
-        prediction(z_t,c_t,gz_t,gc_t,gcz_t,2,dim,zomegac_t,Npatch,module,func,model_omegac);
-        forAll(prho_, facei)
-        {
-            pomega_c[facei]=(omegac_t[facei]+ (
-                    scaledPV_
-                    ? pchi_Z[facei]*pc[facei]
-                        *lookup2d(NZ,z_Tb3,pZ[facei],
-                                    NGZ,gz_Tb3,gz_t[facei],d2Yeq_Tb2)
-                    : 0.0
-                ))*prho_[facei];
-            pcOmega_c[facei]=comegac_t[facei]*prho_[facei];
-            pZOmega_c[facei]=zomegac_t[facei]*prho_[facei];
-        }
-        forAll(prho_, facei)
-        {   
-            if(pZ[facei] <= Zl || pZ[facei] >= Zr
-            || !this->combustion_ || pc[facei]  <= this->small) 
-            {
-                pomega_c[facei] = 0.0;
-                pcOmega_c[facei] = 0.0;  
-                pZOmega_c[facei] = 0.0; 
-            }
-        }
-            if(flameletT_)   
-            {
-                double T_t[Npatch]={};
-                prediction(z_t,c_t,gz_t,gc_t,gcz_t,6,dim,T_t,Npatch,module,func,model_T);
-                forAll(prho_, facei)
-                { 
-                    pT[facei]=T_t[facei];
+                if(this->isLES_)
+                {
+                    pchi_c[facei] = sdrLRXmodel(2.0,pmut[facei]
+                        /this->rho_[facei],this->deltaCells_[cellID],pcvar[facei]);                    
                 }
+                else
+                {
+                    pchi_c[facei] = 1.0*pepsilon[facei]/(pk[facei]+SMALL)*pcvar[facei];    
+                }
+            }
+            if(pchi_Z[facei] > 1.0e-16 and pchi_c[facei]> 1.0e-16)
+            {
+                if (pZcvar[facei] > 1.0e-16)
+                {
+                    pchi_Zc[facei] = max(pchi_Zc[facei], std::sqrt(pchi_Z[facei] * pchi_c[facei])); 
+                }
+                else if (pZcvar[facei] < -1.0e-16)
+                {
+                    pchi_Zc[facei] = min(pchi_Zc[facei], -std::sqrt(pchi_Z[facei] * pchi_c[facei])); 
+                }                
+            }     
+         // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+            double gz{this->cal_gvar(pZ[facei],pZvar[facei])};  
+            double gcz{this->cal_gcor(pZ[facei],pc[facei],pZvar[facei],pcvar[facei],pZcvar[facei])},
+                    Ycmax{-1.0},cNorm{},gc{};     
+            if(tableSolver::scaledPV_)
+            {
+                cNorm = pc[facei];   
             }
             else
             {
-                double Cp_t[Npatch]={};
-                double Hf_t[Npatch]={};
-                prediction(z_t,c_t,gz_t,gc_t,gcz_t,3,dim,Cp_t,Npatch,module,func,model_cp);
-                prediction(z_t,c_t,gz_t,gc_t,gcz_t,5,dim,Hf_t,Npatch,module,func,model_cp);
-                forAll(prho_, facei)
-                { 
-                    pCp[facei]=Cp_t[facei];
-                    pHf[facei]=Hf_t[facei];
-                    pT[facei] = (pH[facei]-pHf[facei])/pCp[facei]
-                                + this->T0;
+                Ycmax = this->lookup6d(this->NH,this->h_Tb3,hLoss,
+                                        this->NZ,this->z_Tb3,pZ[facei],
+                                        this->NC,this->c_Tb3,0.0,
+                                        this->NGZ,this->gz_Tb3,gz,
+                                        this->NGC,this->gc_Tb3,0.0,
+                                        this->NZC,this->gzc_Tb3,0.0,
+                                        this->tableValues_[this->NS-1]);    
+                Ycmax = max(this->smaller,Ycmax);  
+                cNorm = pc[facei]/Ycmax;   
+            }
+            gc = this->cal_gvar(pc[facei],pcvar[facei],Ycmax);   
+            this->He_s_.boundaryFieldRef()[patchi][facei] = hLoss;
+            this->c_s_.boundaryFieldRef()[patchi][facei] = cNorm;
+            this->Zvar_s_.boundaryFieldRef()[patchi][facei] = gz;
+            this->cvar_s_.boundaryFieldRef()[patchi][facei] = gc;
+            if(gcz<-1)
+            {
+                this->Zcvar_s_.boundaryFieldRef()[patchi][facei] = -1;
+            }
+            else if(gcz>1)
+            {
+                this->Zcvar_s_.boundaryFieldRef()[patchi][facei] = 1;
+            }
+            else
+            {
+                this->Zcvar_s_.boundaryFieldRef()[patchi][facei] = gcz;
+            }        
+        }
+        forAll(prho_,facei)
+        {
+            if(pZ[facei] >= Zl_t[facei] && pZ[facei] <= Zr_t[facei]
+                && this->combustion_ && pc[facei] > this->small) 
+            {
+                if (this->isLES_)
+                {
+                    pomega_c[facei] =
+                            this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZ,this->z_Tb3,pZ[facei],
+                                        this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->tableValues_[0])    
+                        + (
+                                tableSolver::scaledPV_
+                                ? (pchi_Z[facei]+ pchi_Zfltd[facei])*pc[facei]
+                                    *this->lookup3d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],this->NZ,this->z_Tb3,pZ[facei],
+                                                    this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],this->d2Yeq_Tb2)
+                                    + 2.0*pchi_Zc[facei]*this->lookup3d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],this->NZ,this->z_Tb3,pZ[facei],
+                                    this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],this->d1Yeq_Tb2)
+                                : 0.0
+                            );  
+                }
+                else
+                {
+                    pomega_c[facei] =
+                            this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZ,this->z_Tb3,pZ[facei],
+                                        this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->tableValues_[0])   
+                        + (
+                                tableSolver::scaledPV_
+                                ? ( pchi_Z[facei]*pc[facei]
+                                *this->lookup3d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],this->NZ,this->z_Tb3,pZ[facei],
+                                                this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],this->d2Yeq_Tb2)
+                                + 2.0*pchi_Zc[facei]*this->lookup3d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],this->NZ,this->z_Tb3,pZ[facei],
+                                    this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],this->d1Yeq_Tb2)  )
+                                : 0.0
+                            );  
+                }
+                pcOmega_c[facei] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                                    this->NZ,this->z_Tb3,pZ[facei],
+                                                    this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                                    this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                                    this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                                    this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],this->tableValues_[1]);
+                pZOmega_c[facei] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NZ,this->z_Tb3,pZ[facei],
+                                            this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],this->tableValues_[2]);
+            }    
+            else
+            {
+                pomega_c[facei] = 0.0;
+                pcOmega_c[facei] = 0.0;
+                pZOmega_c[facei] = 0.0;
+            }
+            pomega_c[facei] = pomega_c[facei]*prho_[facei];    
+            pcOmega_c[facei] = pcOmega_c[facei]*prho_[facei];
+            pZOmega_c[facei] = pZOmega_c[facei]*prho_[facei];
+        }
+        forAll(prho_, facei)   
+        {            
+            pWt[facei] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZ,this->z_Tb3,pZ[facei],
+                                        this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->tableValues_[4]);    
+            pmu[facei] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZ,this->z_Tb3,pZ[facei],
+                                        this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->tableValues_[7])*prho_[facei];  
+            if(this->combustion_)
+            {
+                for (int yi=0; yi<this->NYomega; yi++)
+                {
+                    this->omega_Yis_[yi].boundaryFieldRef()[patchi][facei] = prho_[facei] * 
+                            this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NZ,this->z_Tb3,pZ[facei],
+                                            this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                            this->tableValues_[NS-1+yi-this->NYomega]);
                 }
             }
+            if(baseFGM<ReactionThermo>::flameletT_)  
+            {
+                pT[facei] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZ,this->z_Tb3,pZ[facei],
+                                        this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->tableValues_[6]);   
+            }
+            else
+            {
+                pCp[facei] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZ,this->z_Tb3,pZ[facei],
+                                        this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->tableValues_[3]);   
+
+                pHf[facei] = this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZ,this->z_Tb3,pZ[facei],
+                                        this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                        this->tableValues_[5]);  
+                pT[facei] = (pH[facei]-pHf[facei])/pCp[facei]
+                            + this->T0;  
+            }
+            // // -------------------- Yis begin ------------------------------
+            for (int yi=0; yi<this->NY; yi++)
+            {
+                word specieName2Update = this->speciesNames_table_[yi];
+                const label& specieLabel2Update = this->chemistryPtr_->species()[specieName2Update];
+                // this->Y_[specieLabel2Update].primitiveFieldRef()[celli] = 0.1;
+                this->Y_[specieLabel2Update].boundaryFieldRef()[patchi][facei]  = this->lookup6d(this->NH,this->h_Tb3,this->He_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NZ,this->z_Tb3,pZ[facei],
+                                            this->NC,this->c_Tb3,this->c_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NGZ,this->gz_Tb3,this->Zvar_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NGC,this->gc_Tb3,this->cvar_s_.boundaryFieldRef()[patchi][facei],
+                                            this->NZC,this->gzc_Tb3,this->Zcvar_s_.boundaryFieldRef()[patchi][facei],
+                                            this->tableValues_[this->NS+yi]);  
+            }        
+        }
+    }
     this->T_.max(TMin);  
     this->T_.min(TMax);  
-
+    double R_uniGas_ = 8.314e3;
+    double p_operateDim_ = this->coeffs().lookupOrDefault("p_operateDim", this->incompPref_);
+    forAll(this->rho_.boundaryFieldRef(), patchi)   
+    {
+        fvPatchScalarField& ppsi_ = this->psi_.boundaryFieldRef()[patchi];
+        fvPatchScalarField& prho_ = this->rho_.boundaryFieldRef()[patchi];
+        fvPatchScalarField& pWt = this->Wt_.boundaryFieldRef()[patchi];
+        fvPatchScalarField& pT = this->T_.boundaryFieldRef()[patchi];
+        fvPatchScalarField pp_ = this->p_.boundaryField()[patchi];
+        forAll(prho_, facei)   
+        {
+            ppsi_[facei] = pWt[facei] / (R_uniGas_*pT[facei]);
+            if(this->incompPref_ > 0.0) 
+            {  
+                prho_[facei] = p_operateDim_*ppsi_[facei]; 
+            }
+            else 
+            {
+                prho_[facei] = pp_[facei]*ppsi_[facei];
+            }
+        }
+    }
+    dimensionedScalar R_uniGas("R_uniGas",dimensionSet(1,2,-2,-1,-1,0,0),8.314e3);
+    this->psi_ = this->Wt_/(R_uniGas*this->T_);  
     if(this->mesh().time().timeIndex() > 0)   
     {
         dimensionedScalar p_operateDim("p_operateDim", dimensionSet(1,-1,-2,0,0,0,0),this->incompPref_);  
-
         if(this->incompPref_ > 0.0) 
         {  
             this->rho_ = p_operateDim*this->psi_; 
@@ -532,8 +826,6 @@ void Foam::combustionModels::DeePFGM<ReactionThermo>::retrieval(PyObject* module
         }
     }
     this->rho_inRhoThermo_ = this->rho_;
-
-}
 }
 
 // ************************************************************************* //

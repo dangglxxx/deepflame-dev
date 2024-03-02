@@ -27,31 +27,8 @@
 // PETSc
 // # include <petscvec.h>
 
-
-/** \brief A macro to check the returned CUDA error code.
- *
- * \param call [in] Function call to CUDA API.
- */
-# define CHECK(call)                                                        \
-do                                                    \
-{                                                     \
-    const cudaError_t error_code = call;              \
-    if (error_code != cudaSuccess)                    \
-    {                                                 \
-        printf("CUDA Error:\n");                      \
-        printf("    File:       %s\n", __FILE__);     \
-        printf("    Line:       %d\n", __LINE__);     \
-        printf("    Error code: %d\n", error_code);   \
-        printf("    Error text: %s\n",                \
-            cudaGetErrorString(error_code));          \
-        exit(1);                                      \
-    }                                                 \
-} while (0)
-
-
-
-
-
+// mpi
+#include <mpi.h>
 
 /** \brief A wrapper class for coupling PETSc and AmgX.
  *
@@ -100,14 +77,15 @@ class AmgXSolver
 
         /** \brief Construct a AmgXSolver instance.
          *
-         * \param comm [in] MPI communicator.
          * \param modeStr [in] A string; target mode of AmgX (e.g., dDDI).
          * \param cfgFile [in] A string; the path to AmgX configuration file.
+         * \param devID [in] An integer; the ID of the GPU device to be used.
          */
         AmgXSolver
         (
             const std::string &modeStr,
-            const std::string &cfgFile
+            const std::string &cfgFile,
+            int devID
         );
 
         /** \brief Destructor. */
@@ -115,15 +93,16 @@ class AmgXSolver
 
         /** \brief Initialize a AmgXSolver instance.
          *
-         * \param comm [in] MPI communicator.
          * \param modeStr [in] A string; target mode of AmgX (e.g., dDDI).
          * \param cfgFile [in] A string; the path to AmgX configuration file.
+         * \param devID [in] An integer; the ID of the GPU device to be used.
          *
          */
         void initialize
         (
             const std::string &modeStr,
-            const std::string &cfgFile
+            const std::string &cfgFile,
+            const int devID
         );
 
 
@@ -153,6 +132,7 @@ class AmgXSolver
         void setOperator
         (
             const int nRows,
+            const int nGlobalRows,
             const int nNz,
             const int *rowIndex,
             const int *colIndex,
@@ -258,8 +238,17 @@ class AmgXSolver
         /** \brief A flag indicating if this instance has been initialized. */
         bool                    isInitialised = false;
 
+        /** \brief A flag indicating whether MPI is enabled */
+        int                     isMPIEnabled;
+        
         /** \brief A parameter used by AmgX. */
         int                     ring;
+
+        /** \brief rank size in global communicator */
+        int                     mpiSize;
+
+        /** \brief rank size in global communicator */
+        MPI_Comm                mpiWorld;
 
         /** \brief AmgX solver mode. */
         AMGX_Mode               mode;
@@ -302,8 +291,9 @@ class AmgXSolver
          * is in charge of initializing AmgX and the resource instance.
          *
          * \param cfgFile [in] Path to AmgX solver configuration file.
+         * \param devID [in] ID of the GPU device to be used.
          */
-        void initAmgX(const std::string &cfgFile);
+        void initAmgX(const std::string &cfgFile, int devID);
 };
 
 #endif

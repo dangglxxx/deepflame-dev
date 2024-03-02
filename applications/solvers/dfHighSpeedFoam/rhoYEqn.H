@@ -110,7 +110,7 @@ time_monitor_corrDiff += double(end - start) / double(CLOCKS_PER_SEC);
                     rhoYi_rhs = 
                         (
                             turbName == "laminar"
-                            ?  (fvc::laplacian(DEff(), Yi) - fvc::div(phiUc,Yi,"div(phic,Yi)")) 
+                            ?  (fvc::laplacian(DEff(), Yi) - fvc::div(phiUc,Yi,"div(phi,Yi_h)")) 
                             :  fvc::laplacian(DEff(), Yi)
                         );
 

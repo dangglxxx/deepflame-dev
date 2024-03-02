@@ -9,10 +9,11 @@ unset PYTORCH_INC
 unset PYTORCH_LIB
 unset USE_GPUSOLVER
 unset AMGX_DIR
+unset ODE_GPU_SOLVER
 
 print_usage() {
     echo "Usage: . install.sh --libtorch_no (default) | --libtorch_dir _path_to_libtorch | --libtorch_autodownload | --use_pytorch | --libcantera_dir _path_to_libcantera
-        | --amgx_dir _path_to_amgx"
+        | --amgx_dir _path_to_amgx | --use_ode_gpu_solver"
 }
 
 # default
@@ -20,6 +21,7 @@ LIBTORCH_AUTO=false
 USE_LIBTORCH=false
 USE_PYTORCH=false
 USE_GPUSOLVER=false
+USE_ODE_GPU_SOLVER=false
 
 while test $# -gt 0; do
     case "$1" in
@@ -74,6 +76,10 @@ while test $# -gt 0; do
             return
             fi
             shift
+            ;;
+        --use_ode_gpu_solver)
+            shift
+            USE_ODE_GPU_SOLVER=true
             ;;
         -h|--help)
             shift
@@ -143,10 +149,7 @@ if [ $USE_PYTORCH = true ]; then
     if [ -z "$PYTORCH_INC" ]; then
         return
     fi
-    PYTORCH_LIB=`python3 -c "from distutils import sysconfig; \
-    import os.path as op; v = sysconfig.get_config_vars(); \
-    fpaths = [op.join(v[pv], v['LDLIBRARY']) for pv in ('LIBDIR', 'LIBPL')]; \
-    print(list(filter(op.exists, fpaths))[0])" | xargs dirname`
+    PYTORCH_LIB=`pkg-config --libs python3-embed`
 fi
 
 
@@ -166,6 +169,9 @@ fi
 if [ $USE_GPUSOLVER = true ]; then
     echo AMGX_DIR=$AMGX_DIR
 fi
+if [ $USE_ODE_GPU_SOLVER = true ]; then
+    echo ODE_GPU_SOLVER=$OPENCC_PATH
+fi
 
 cp bashrc.in bashrc
 sed -i "s#pwd#$PWD#g" ./bashrc
@@ -174,6 +180,7 @@ sed -i "s#PYTORCH_INC#$PYTORCH_INC#g" ./bashrc
 sed -i "s#PYTORCH_LIB#$PYTORCH_LIB#g" ./bashrc
 sed -i "s#LIBCANTERA_DIR#$LIBCANTERA_DIR#g" ./bashrc
 sed -i "s#@AMGX_DIR@#$AMGX_DIR#g" ./bashrc
+sed -i "s#@ODE_GPU_SOLVER@#$OPENCC_PATH#g" ./bashrc
 
 
 

@@ -1,144 +1,145 @@
 #include "dfRhoEqn.H"
 
-// kernel functions
-__global__ void fvc_div_internal_rho(int num_cells, const int *csr_row_index,
-                                     const int *csr_diag_index, const int *permedIndex, const double *phi_init,
-                                     double *phi_out, const double sign, const double *b_input, double *b_output)
+void dfRhoEqn::createNonConstantLduAndCsrFields()
 {
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_cells)
-        return;
+#ifndef STREAM_ALLOCATOR
+    checkCudaErrors(cudaMalloc((void**)&d_source, dataBase_.cell_value_bytes));
+    checkCudaErrors(cudaMalloc((void**)&d_diag, dataBase_.cell_value_bytes));
+    DEBUG_TRACE;
+#endif
+}
 
-    // A_csr has one more element in each row: itself
-    int row_index = csr_row_index[index];
-    int row_elements = csr_row_index[index + 1] - row_index;
-    int diag_index = csr_diag_index[index];
-    int neighbor_offset = csr_row_index[index] - index;
+void dfRhoEqn::setConstantValues() {
+    this->stream = dataBase_.stream;
+}
 
-    double sum = 0;
+void dfRhoEqn::setConstantFields(const std::vector<int> patch_type) {
+  this->patch_type = patch_type;
+}
 
-    // lower
-    for (int i = 0; i < diag_index; i++)
-    {
-        int neighbor_index = neighbor_offset + i;
-        int permute_index = permedIndex[neighbor_index];
-        double phi = phi_init[permute_index];
-        phi_out[neighbor_index] = phi;
-        sum -= phi;
+void dfRhoEqn::initNonConstantFields(const double *rho, const double *phi, 
+            const double *boundary_rho, const double *boundary_phi) {
+    checkCudaErrors(cudaMemcpy(dataBase_.d_rho, rho, dataBase_.cell_value_bytes, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(dataBase_.d_phi, phi, dataBase_.surface_value_bytes, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(dataBase_.d_boundary_rho, boundary_rho, dataBase_.boundary_surface_value_bytes, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(dataBase_.d_boundary_phi, boundary_phi, dataBase_.boundary_surface_value_bytes, cudaMemcpyHostToDevice));
+}
+
+void dfRhoEqn::cleanCudaResources() {
+#ifdef USE_GRAPH
+    if (graph_created) {
+        checkCudaErrors(cudaGraphExecDestroy(graph_instance));
+        checkCudaErrors(cudaGraphDestroy(graph));
     }
-    // upper
-    for (int i = diag_index + 1; i < row_elements; i++)
-    {
-        int neighbor_index = neighbor_offset + i - 1;
-        int permute_index = permedIndex[neighbor_index];
-        double phi = phi_init[permute_index];
-        phi_out[neighbor_index] = phi;
-        sum += phi;
+#endif
+}
+
+void dfRhoEqn::preProcess()
+{
+}
+
+void dfRhoEqn::process()
+{
+    TICK_INIT_EVENT;
+    TICK_START_EVENT;
+#ifdef USE_GRAPH
+    if(!graph_created) {
+        DEBUG_TRACE;
+        checkCudaErrors(cudaStreamBeginCapture(dataBase_.stream, cudaStreamCaptureModeGlobal));
+#endif
+
+#ifdef STREAM_ALLOCATOR
+    checkCudaErrors(cudaMallocAsync((void**)&d_source, dataBase_.cell_value_bytes, dataBase_.stream));
+    checkCudaErrors(cudaMallocAsync((void**)&d_diag, dataBase_.cell_value_bytes, dataBase_.stream));
+#endif
+    // checkCudaErrors(cudaMemcpyAsync(dataBase_.d_phi, dataBase_.h_phi, dataBase_.surface_value_bytes, cudaMemcpyHostToDevice, dataBase_.stream));
+    // checkCudaErrors(cudaMemcpyAsync(dataBase_.d_boundary_phi, dataBase_.h_boundary_phi, dataBase_.boundary_surface_value_bytes, cudaMemcpyHostToDevice, dataBase_.stream));
+    // checkCudaErrors(cudaMemcpyAsync(dataBase_.d_boundary_rho, dataBase_.h_boundary_rho, dataBase_.boundary_surface_value_bytes, cudaMemcpyHostToDevice, dataBase_.stream));
+
+    checkCudaErrors(cudaMemsetAsync(d_diag, 0, dataBase_.cell_value_bytes, dataBase_.stream));
+    checkCudaErrors(cudaMemsetAsync(d_source, 0, dataBase_.cell_value_bytes, dataBase_.stream));
+
+    fvm_ddt_scalar(dataBase_.stream, dataBase_.num_cells, dataBase_.rdelta_t, dataBase_.d_rho_old, dataBase_.d_volume, 
+            d_diag, d_source);
+    fvc_div_surface_scalar(dataBase_.stream, dataBase_.num_cells, dataBase_.num_surfaces, dataBase_.num_boundary_surfaces, dataBase_.d_owner,
+            dataBase_.d_neighbor, dataBase_.d_phi, dataBase_.d_boundary_face_cell, 
+            dataBase_.num_patches, dataBase_.patch_size.data(), patch_type.data(),
+            dataBase_.d_boundary_phi, dataBase_.d_volume, d_source, -1);
+    solve();
+    correct_boundary_conditions_scalar(dataBase_.stream, dataBase_.nccl_comm, dataBase_.neighbProcNo.data(),
+            dataBase_.num_boundary_surfaces, dataBase_.num_patches, dataBase_.patch_size.data(),
+            patch_type.data(), dataBase_.d_boundary_delta_coeffs, dataBase_.d_boundary_face_cell, dataBase_.d_rho, dataBase_.d_boundary_rho,
+            dataBase_.cyclicNeighbor.data(), dataBase_.patchSizeOffset.data(), dataBase_.d_boundary_weight);
+#ifdef USE_GRAPH
+        checkCudaErrors(cudaStreamEndCapture(dataBase_.stream, &graph));
+        checkCudaErrors(cudaGraphInstantiate(&graph_instance, graph, NULL, NULL, 0));
+        graph_created = true;
     }
+    checkCudaErrors(cudaGraphLaunch(graph_instance, dataBase_.stream));
+#endif
+    TICK_END_EVENT(rhoEqn process);
 
-    b_output[index] = b_input[index] + sum * sign;
-}
-
-__global__ void fvc_div_boundary_rho(int num_cells, int num_boundary_cells, const int *boundary_cell_offset,
-                                     const int *boundary_cell_id, const int *bouPermedIndex, const double *boundary_phi_init,
-                                     double *boundary_phi, const double sign, const double *b_input, double *b_output)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_boundary_cells)
-        return;
-
-    int cell_offset = boundary_cell_offset[index];
-    int next_cell_offset = boundary_cell_offset[index + 1];
-    int cell_index = boundary_cell_id[cell_offset];
-
-    double sum = 0;
-
-    for (int i = cell_offset; i < next_cell_offset; i++)
-    {
-        int permute_index = bouPermedIndex[i];
-        double phi = boundary_phi_init[permute_index];
-        boundary_phi[i] = phi;
-        sum += phi;
-    }
-
-    b_output[cell_index] = b_input[cell_index] + sum * sign;
-}
-
-__global__ void fvm_ddt_rho(int num_cells, const double rdelta_t,
-                            const double *rho_old, double *rho_new, const double *volume, const double *b)
-{
-    int index = blockDim.x * blockIdx.x + threadIdx.x;
-    if (index >= num_cells)
-        return;
-
-    double ddt_diag = rdelta_t * volume[index];
-    double ddt_source = rdelta_t * rho_old[index] * volume[index];
-    double source_sum = ddt_source - b[index];
-
-    rho_new[index] = source_sum / ddt_diag;
-}
-
-// constructor
-dfRhoEqn::dfRhoEqn(dfMatrixDataBase &dataBase)
-    : dataBase_(dataBase)
-{
-    stream = dataBase_.stream;
-    num_cells = dataBase_.num_cells;
-    cell_bytes = dataBase_.cell_bytes;
-    num_surfaces = dataBase_.num_surfaces;
-    num_boundary_cells = dataBase_.num_boundary_cells;
-
-    d_A_csr_row_index = dataBase_.d_A_csr_row_index;
-    d_A_csr_diag_index = dataBase_.d_A_csr_diag_index;
-
-    cudaMallocHost(&h_psi, cell_bytes);
-
-    checkCudaErrors(cudaMalloc((void **)&d_b, cell_bytes));
-    checkCudaErrors(cudaMalloc((void **)&d_psi, cell_bytes));
-}
-
-void dfRhoEqn::initializeTimeStep()
-{
-    // initialize matrix value
-    checkCudaErrors(cudaMemsetAsync(d_b, 0, cell_bytes, stream));
-}
-
-void dfRhoEqn::fvc_div(double *phi, double *boundary_phi_init)
-{
-    memcpy(dataBase_.h_phi_init, phi, num_surfaces * sizeof(double));
-
-    checkCudaErrors(cudaMemcpyAsync(dataBase_.d_phi_init, dataBase_.h_phi_init, num_surfaces * sizeof(double), cudaMemcpyHostToDevice, stream));
-    checkCudaErrors(cudaMemcpyAsync(dataBase_.d_phi_init + num_surfaces, dataBase_.d_phi_init, num_surfaces * sizeof(double), cudaMemcpyDeviceToDevice, stream));
-    checkCudaErrors(cudaMemcpyAsync(dataBase_.d_boundary_phi_init, boundary_phi_init, dataBase_.boundary_face_bytes, cudaMemcpyHostToDevice, stream));
-
-    size_t threads_per_block = 1024;
-    size_t blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    fvc_div_internal_rho<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells, d_A_csr_row_index, d_A_csr_diag_index, dataBase_.d_permedIndex,
-                                                                            dataBase_.d_phi_init, dataBase_.d_phi, 1., d_b, d_b);
-
-    blocks_per_grid = (num_boundary_cells + threads_per_block - 1) / threads_per_block;
-    fvc_div_boundary_rho<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells, num_boundary_cells, dataBase_.d_boundary_cell_offset, dataBase_.d_boundary_cell_id,
-                                                                            dataBase_.d_bouPermedIndex, dataBase_.d_boundary_phi_init, dataBase_.d_boundary_phi, 1., d_b, d_b);
-}
-
-void dfRhoEqn::fvm_ddt(double *rho_old)
-{
-    checkCudaErrors(cudaMemcpyAsync(dataBase_.d_rho_old, rho_old, cell_bytes, cudaMemcpyHostToDevice, stream));
-    size_t threads_per_block = 1024;
-    size_t blocks_per_grid = (num_cells + threads_per_block - 1) / threads_per_block;
-    fvm_ddt_rho<<<blocks_per_grid, threads_per_block, 0, stream>>>(num_cells, dataBase_.rdelta_t, dataBase_.d_rho_old, dataBase_.d_rho_new, dataBase_.d_volume, d_b);
-    checkCudaErrors(cudaMemcpyAsync(h_psi, dataBase_.d_rho_new, cell_bytes, cudaMemcpyDeviceToHost, stream));
+    TICK_START_EVENT;
+#ifdef STREAM_ALLOCATOR
+    checkCudaErrors(cudaFreeAsync(d_source, dataBase_.stream));
+    checkCudaErrors(cudaFreeAsync(d_diag, dataBase_.stream));
+#endif
+    TICK_END_EVENT(rhoEqn post process free);
+    TICK_START_EVENT;
+    // checkCudaErrors(cudaMemcpyAsync(dataBase_.h_rho, dataBase_.d_rho, dataBase_.cell_value_bytes, cudaMemcpyDeviceToHost, dataBase_.stream));
+    TICK_END_EVENT(rhoEqn post process copy back);
+    sync();
 }
 
 void dfRhoEqn::sync()
 {
-    checkCudaErrors(cudaStreamSynchronize(stream));
+    checkCudaErrors(cudaStreamSynchronize(dataBase_.stream));
 }
 
-void dfRhoEqn::updatePsi(double *Psi)
+void dfRhoEqn::solve()
 {
-    checkCudaErrors(cudaStreamSynchronize(stream));
-    for (size_t i = 0; i < num_cells; i++)
-        Psi[i] = h_psi[i];
+    solve_explicit_scalar(dataBase_.stream, dataBase_.num_cells, d_diag, d_source, dataBase_.d_rho);
 }
-dfRhoEqn::~dfRhoEqn(){}
+
+void dfRhoEqn::postProcess(double *h_rho) {}
+
+void dfRhoEqn::compareResult(const double *diag, const double *source, bool printFlag)
+{
+    std::vector<double> h_diag;
+    h_diag.resize(dataBase_.num_cells);
+    checkCudaErrors(cudaMemcpy(h_diag.data(), d_diag, dataBase_.cell_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_diag\n");
+    checkVectorEqual(dataBase_.num_cells, diag, h_diag.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+
+    std::vector<double> h_source;
+    h_source.resize(dataBase_.num_cells);
+    checkCudaErrors(cudaMemcpy(h_source.data(), d_source, dataBase_.cell_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_source\n");
+    checkVectorEqual(dataBase_.num_cells, source, h_source.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+}
+
+void dfRhoEqn::compareRho(const double *rho, const double *boundary_rho, bool printFlag)
+{
+    std::vector<double> h_rho;
+    h_rho.resize(dataBase_.num_cells);
+    checkCudaErrors(cudaMemcpy(h_rho.data(), dataBase_.d_rho, dataBase_.cell_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_rho\n");
+    checkVectorEqual(dataBase_.num_cells, rho, h_rho.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+
+    std::vector<double> h_boundary_rho;
+    h_boundary_rho.resize(dataBase_.num_boundary_surfaces);
+    checkCudaErrors(cudaMemcpy(h_boundary_rho.data(), dataBase_.d_boundary_rho, dataBase_.boundary_surface_value_bytes, cudaMemcpyDeviceToHost));
+    fprintf(stderr, "check h_boundary_rho\n");
+    checkVectorEqual(dataBase_.num_boundary_surfaces, boundary_rho, h_boundary_rho.data(), 1e-14, printFlag);
+    DEBUG_TRACE;
+}
+
+void dfRhoEqn::correctPsi(const double *rho, const double *boundary_rho)
+{
+    checkCudaErrors(cudaMemcpy(dataBase_.d_rho, rho, dataBase_.cell_value_bytes, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(dataBase_.d_boundary_rho, boundary_rho, dataBase_.boundary_surface_value_bytes, cudaMemcpyHostToDevice));
+}
+

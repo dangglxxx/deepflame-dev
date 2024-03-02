@@ -3,27 +3,39 @@
         <img src="https://user-images.githubusercontent.com/121787251/218061666-eb9e4188-d368-41d0-8ed6-fe5121699efe.jpg">
     </a>
     <a href="https://github.com/deepmodeling/deepflame-dev/releases">
-        <img src="https://img.shields.io/github/v/release/deepmodeling/deepflame-dev?include_prereleases&label=latest%20release&style=for-the-badge">
+        <img src="https://img.shields.io/github/v/release/deepmodeling/deepflame-dev?include_prereleases&label=latest%20release&rgb(0%2C%20113%2C%20189)">
     </a>    
     <a href="https://github.com/deepmodeling/deepflame-dev/pulls">
-        <img src="https://img.shields.io/badge/contributions-welcome-red.svg?style=for-the-badge">
+        <img src="https://img.shields.io/badge/contributions-welcome-red.svg?color=rgb(48%2C%20185%2C%20237)">
     </a>    
     <a href="https://github.com/deepmodeling/deepflame-dev/blob/master/LICENSE">
-        <img src="https://img.shields.io/github/license/deepmodeling/deepflame-dev?color=yellow&logo=GitHub&style=for-the-badge">
+        <img src="https://img.shields.io/github/license/deepmodeling/deepflame-dev?logo=GitHub&color=rgb(255%2C%20232%2C%2054)">
     </a>    
     <a href="https://deepflame.deepmodeling.com/en/latest/">
-        <img src="https://img.shields.io/website?label=Documentation%20HomePage&style=for-the-badge&up_message=online&url=https%3A%2F%2Fdeepflame.deepmodeling.com%2Fen%2Flatest%2F">
+        <img src="https://img.shields.io/website?label=Documentation%20HomePage&up_message=online&url=https%3A%2F%2Fdeepflame.deepmodeling.com%2Fen%2Flatest%2F&color=rgb(241%2C%20155%2C%2068)">
     </a>  
+    <a href="https://doi.org/10.1016/j.cpc.2023.108842">
+        <img src="https://img.shields.io/badge/DOI-10.1016%2Fj.cpc.2023.108842-black?color=rgb(232%2C%2093%2C%2050)">
+    </a> 
 </p>
 
 DeepFlame is a deep learning empowered computational fluid dynamics package for single or multiphase, laminar or turbulent, reacting flows at all speeds. It aims to provide an open-source platform to combine the individual strengths of [OpenFOAM](https://openfoam.org), [Cantera](https://cantera.org), and [PyTorch](https://pytorch.org/) libraries for deep learning assisted reacting flow simulations. It also has the scope to leverage the next-generation heterogenous supercomputing and AI acceleration infrastructures such as GPU and FPGA.
 
-The deep learning algorithms and models used in the DeepFlame tutorial examples are developed and trained independently by our collaborators team – [Intelligent Combustion](https://github.com/intelligent-algorithm-team/intelligent-combustion.git). Please refer to their website for detailed information.
+The neural network models used in the tutorial examples can be found at– [AIS Square](https://www.aissquare.com/). To run DeepFlame with DNN, download the DNN model [DF-ODENet](https://www.aissquare.com/models/detail?pageType=models&name=DF-ODENet_DNNmodel&id=197) into the case folder you would like to run.
 
 ## Documentation
 Detailed guide for installation and tutorials is available on [our documentation website](https://deepflame.deepmodeling.com).
 
 ## Features
+New in v1.3.0 (2023/12/30):
+- Complete the full-loop GPU implementation of the `dfLowMachFoam` solver, enabling efficient execution of all computations on GPU
+- Introduce `DF-ODENet` model, which utilizes sampling from canonical combustion simulation configurations to reduce training costs and improve computational efficiency
+- Support Large Eddy Simulation (LES) and two-phase combustion simulation capabilities
+- Expand the `flareFGM` table to six dimensions and add support for neural network replacement of certain physical quantities in the new six-dimensional `flareFGM` table
+- Support multi-GPU and multi-processor execution through the `DeepFGM` neural network interface
+- Modify Cantera's approach to transport property calculations to support real fluid thermophysical property calculation of multi-component reactive flows and integrate neural networks for updating real fluid thermophysical properties
+- Add new example cases and update the documentation homepage to provide more comprehensive installation and usage instructions 
+
 New in v1.2.0 (2023/06/30):
 - Enable GPU acceleration for fast and efficient discrete matrix construction for solving partial differential equations
 - Introduce `DeePFGM` model: a neural network-based approach to replace the flamelet database of the FGM model and reduce memory requirement

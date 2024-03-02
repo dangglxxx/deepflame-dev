@@ -1,0 +1,29 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  7
+     \\/     M anipulation |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      funkySetFieldsDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+expressions
+ (
+TGV_U  
+    {
+     field U; 
+     expression "vector(4*sin(pos().x/0.00003)*cos(pos().y/0.00003)*cos(pos().z/0.00003),-4*cos(pos().x/0.00003)*sin(pos().y/0.00003)*cos(pos().z/0.00003),0)"; 
+     keepPatches 1; 
+    }
+ );
+
+
+// ************************************************************************* //

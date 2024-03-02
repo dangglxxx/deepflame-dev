@@ -1,0 +1,6 @@
+#!/bin/sh
+cd ${0%/*} || exit 1    # Run from this directory
+
+reconstructPar -time 1.1
+postProcess -func sample -time 1.1
+

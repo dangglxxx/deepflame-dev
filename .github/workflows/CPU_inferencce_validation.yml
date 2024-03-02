@@ -12,6 +12,7 @@ jobs:
     if: github.repository_owner == 'deepmodeling'     
     container: 
       image: ubuntu:20.04
+      options: --shm-size=5g  # shared memory size = 5GB
     steps:
      - name: Checkout
        uses: actions/checkout@v3
@@ -31,8 +32,10 @@ jobs:
         . ~/miniconda3/etc/profile.d/conda.sh
         conda create -n libcantera python=3.8
         conda activate libcantera
-        conda install -c cantera libcantera-devel
+        conda install -c cantera libcantera-devel=2.6
+        conda install -c cantera cantera
         conda install pytorch pybind11
+        conda install pkg-config
         conda install --channel https://conda.anaconda.org/zhaofeng-shu33 easydict
         git clone https://github.com/deepmodeling/deepflame-dev.git
         cd deepflame-dev
@@ -45,14 +48,12 @@ jobs:
         OMPI_MCA_btl_vader_single_copy_mechanism: none
        run: 
         /bin/bash -c " echo $PWD && ls $PWD
-        && wget https://github.com/JX278/DeepFlame-flareFGM-table/raw/main/flareFGM_Table_Download.zip
-        && unzip flareFGM_Table_Download.zip
+        && wget --content-disposition https://aisquare.oss-us-east-1.aliyuncs.com/data/datasets/14b50df5-dbe9-4f1c-bf58-032b8bc40a20
+        && unzip flare_CH4_SandiaD_4D.zip
         && ls $PWD
-        && ls flareFGM_Table_Download
-        && cp -r flareFGM_Table_Download/SandiaD/flare.tbl examples/dfLowMachFoam/2DSandiaD_flareFGM/
-        && git clone https://github.com/intelligent-algorithm-team/intelligent-combustion.git 
-        && cp -r intelligent-combustion/DeePCK/Model/HE04_Hydrogen_ESH2_GMS_sub_20221101/ mechanisms/ && source ~/miniconda3/etc/profile.d/conda.sh && conda activate libcantera && source /opt/openfoam7/etc/bashrc 
-        && . configure.sh --use_pytorch && source ./bashrc && . install.sh 
+        && cp -r flare_CH4_SandiaD_4D.tbl examples/dfLowMachFoam/fgm/twoD_SandiaD_flareFGM
+        && source ~/miniconda3/etc/profile.d/conda.sh && conda activate libcantera && source /opt/openfoam7/etc/bashrc 
+        && . configure.sh --use_pytorch&& source ./bashrc && . install.sh 
         && cd test && ./Allrun && conda deactivate "
 
      - name: test 

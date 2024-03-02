@@ -22,7 +22,7 @@ License
     along with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
 
 Class
-    Foam::combustionModels::flareFGM
+    Foam::combustionModels::DeePFGM
 
 Description
     Partially stirred reactor turbulent combustion model.
@@ -32,7 +32,7 @@ Description
     to scale the turbulence mixing time scale.
 
 SourceFiles
-    flareFGM.C
+    DeePFGM.C
 
 \*---------------------------------------------------------------------------*/
 
@@ -41,7 +41,9 @@ SourceFiles
 
 #include "baseFGM.H"
 #include "tableSolver.H"
-
+#include "volFields.H"
+#include "GpuFGMProblem.H"
+#include "GpuFGMSolution.H"
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 namespace Foam
@@ -50,7 +52,7 @@ namespace combustionModels
 {
 
 /*---------------------------------------------------------------------------*\
-                            Class flareFGM Declaration
+                            Class DeePFGM Declaration
 \*---------------------------------------------------------------------------*/
 
 template<class ReactionThermo>
@@ -64,6 +66,9 @@ public:
 
     //- Runtime type information
     TypeName("DeePFGM");
+
+
+    //- Runtime type information
 
 
     // Constructors
@@ -82,7 +87,7 @@ public:
 
 
     //- Destructor
-        virtual ~DeePFGM();
+    virtual ~DeePFGM();
 
 
     // Member Operators
@@ -91,27 +96,32 @@ public:
         virtual void correct();
 
         //- retrieval data from table
-        // virtual void retrieval();
+        virtual void retrieval( );
 
-        virtual void retrieval(PyObject* module,PyObject* func,PyObject* model_omegac,PyObject* model_cp,PyObject* model_T,PyObject* model_YH2O,PyObject* model_YCO,PyObject* model_YCO2);
-        virtual int prediction(
-        double z_s[], double c_s[], double gz_s[], double gc_s[],
-        double gcz_s[],  int phinum, int dimension,double* result,int size,PyObject* module,PyObject* func,PyObject* model
-    );
-        virtual PyObject* initialize_module();
-        virtual PyObject* initialize_function(PyObject* module);
-        virtual PyObject* initialize_load(PyObject* module);
+        pybind11::object my_module;
+        pybind11::object model;
+        pybind11::object phimax;
+        pybind11::object phimin;
+        pybind11::object xmax;
+        pybind11::object xmin;
+        virtual void getGPUFGMProblemCells(Foam::DynamicList<GpuFGMProblem>& GPUFGMproblemList);
+        virtual void getDNNinputs
+        (
+            const Foam::DynamicBuffer<GpuFGMProblem>& problemBuffer,
+            std::vector<label>& outputLength,
+            std::vector<std::vector<double>>& DNNinputs,
+            std::vector<Foam::DynamicBuffer<label>>& cellIDBuffer,
+            std::vector<std::vector<label>>& problemCounter
+        );
+        virtual void updateSolutionBuffer
+        (
+            Foam::DynamicBuffer<GpuFGMSolution>& solutionBuffer,
+            const std::vector<std::vector<double>>& results,
+            const std::vector<Foam::DynamicBuffer<Foam::label>>& cellIDBuffer,
+            std::vector<std::vector<Foam::label>>& problemCounter
+        );
         //- Disallow default bitwise assignment
         void operator=(const DeePFGM&) = delete;
-        PyObject* module;
-        PyObject* func;
-        PyObject* func_load;
-        PyObject* model_omegac;
-        PyObject* model_cp;
-        PyObject* model_T;
-        PyObject* model_YH2O;
-        PyObject* model_YCO;
-        PyObject* model_YCO2;
 };
 
 
@@ -120,14 +130,16 @@ public:
 } // End namespace combustionModels
 } // End namespace Foam
 
+
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 #ifdef NoRepository
     #include "DeePFGM.C"
 #endif
 
+#endif
+
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-#endif
 
 // ************************************************************************* //
